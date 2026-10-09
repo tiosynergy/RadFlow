@@ -31,7 +31,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { guardBodyOf, pinFor } from "../scripts/migration-gate-lib.mjs";
 import {
-  CLINIC_STATUSES, LOGIN_BLOCKED_STATUSES, PLATFORM_ACTIONS, PLATFORM_ACTION_LABEL, PLATFORM_LOG_FORBIDDEN_KEYS,
+  CLINIC_STATUSES, LOGIN_BLOCKED_STATUSES, PLATFORM_ACTIONS, PLATFORM_ACTION_LABEL, PLATFORM_LOG_FORBIDDEN_KEYS, PLATFORM_LOG_DETAIL_KEYS, projectLogDetails,
   PLAN_MAX, STATUS_REASON_MAX, ACCOUNT_NOTES_MAX, OPERATOR_NAME_MAX,
 } from "../lib/platformContract";
 
@@ -133,7 +133,7 @@ describe("0206 — файл міграції", () => {
     expect(tail.startsWith(`insert into public.migration_ledger (name)\nvalues ('${MIG_FILE}')\non conflict (name) do nothing;\n\ncommit;\n`)).toBe(true);
     expect(MIG.indexOf("=== ВІДКАТ ===")).toBeGreaterThan(MIG.indexOf("\ncommit;\n"));
     expect(/raise (notice|warning)/i.test(codeOf(MIG)), "тихий сторож у коді файла (проза сторожа цитує raise notice — тому код без коментарів)").toBe(false);
-    expect(/raise exception '0206: сторож перевірив % замість 26'/.test(MIG)).toBe(true);
+    expect(/raise exception '0206: сторож перевірив % замість 26'/.test(codeOf(MIG))).toBe(true);
     expect(MIG.split("\n").filter((l) => /^\s*--/.test(l)).some((l) => l.includes("*" + "/"))).toBe(false);
     for (const t of ["$pre$", "$chk$", "$post$"]) expect(count(MIG, t), `тег ${t}`).toBe(2);
     for (const t of ["$apply$", "$dryrun$", "$back$", "$falsify$", "$fxa$", "$q$", "$smoke$"]) expect(MIG.includes(t), `тег фрагмента ${t} у файлі`).toBe(false);
@@ -164,7 +164,7 @@ describe("0206 — DDL пакета", () => {
     expect(count(ddl, "enable row level security;")).toBe(3);
     expect(ddl).toContain("revoke all on table public.platform_operators, public.platform_accounts, public.platform_log from public, anon, authenticated;");
     expect(/create policy/i.test(ddl)).toBe(false);
-    expect(/alter table public\.clinics/i.test(MIG), "clinics DDL не торкається (пін k:clinics у tzKyivPhase2)").toBe(false);
+    expect(/alter table public\.clinics/i.test(codeOf(MIG)), "clinics DDL не торкається (пін k:clinics у tzKyivPhase2)").toBe(false);
   });
   it("CHECK статусу = CLINIC_STATUSES; CHECK ПДн журналу = PLATFORM_LOG_FORBIDDEN_KEYS; форма action; межі = контракту", () => {
     expect(ddl).toContain(`constraint platform_accounts_status_chk check (status in (${CLINIC_STATUSES.map((s) => `'${s}'`).join(", ")}))`);
@@ -180,7 +180,7 @@ describe("0206 — DDL пакета", () => {
     const op = ddl.slice(ddl.indexOf("create table if not exists public.platform_operators ("), ddl.indexOf("create table if not exists public.platform_accounts ("));
     expect(op).toContain("id          uuid primary key references auth.users(id) on delete cascade,");
     expect(op).not.toMatch(/clinic_id|user_role|profiles/);
-    expect(MIG).not.toMatch(/alter type user_role/i);
+    expect(codeOf(MIG)).not.toMatch(/alter type user_role/i);
   });
   it("слід переживає видалення центру й оператора: on delete set null на FK журналу й обліку", () => {
     expect(count(ddl, "references public.platform_operators(id) on delete set null")).toBe(5);
@@ -209,16 +209,30 @@ describe("0206 — фрагменти і смоук", () => {
       expect(/raise (notice|warning)/i.test(codeOf(f)), `${n}: тихий сторож`).toBe(false);
     }
   });
-  it("накат — без поведінкової проби; сухий прогін і фальсифікація — з нею; ПОВНИЙ сторож до DDL вимагає рівно шість missing:", () => {
+  it("накат: DDL ПЕРЕД передруком (ревʼю с84 A-1: нове №24 читає platform_operators), старий №23 називає рівно шість new:, повний сторож один; проба лише в dryrun/falsify", () => {
     expect(APPLY).not.toContain("insert into auth.users");
     expect(APPLY).toContain("(поведінкова проба — лише у dryrun і falsify: тут транзакція комітиться)");
     expect(DRYRUN).toContain("insert into auth.users");
     expect(FALSIFY).toContain("insert into auth.users");
-    const missing = `array[${NEW23.map(([k]) => `'missing:${k}'`).join(", ")}]::text[]`;
-    expect(APPLY).toContain(missing);
-    expect(DRYRUN).toContain(missing);
-    expect(count(APPLY, "  v_res := public.invariants_check(false);")).toBe(2);
-    expect(APPLY.indexOf("create table public.platform_operators (")).toBeGreaterThan(APPLY.indexOf("guard_body_md5="));
+    const newKeys = `array[${NEW23.map(([k, d]) => `'new:${k}->${d}'`).join(", ")}]::text[]`;
+    for (const [n, f] of [["apply", APPLY], ["dryrun", DRYRUN]] as const) {
+      expect(f, `${n}: очікування new: зі заміряними дайджестами`).toContain(newKeys);
+      const ddl = f.indexOf("create table public.platform_operators (");
+      const red23 = f.indexOf(newKeys);
+      const reprint = f.indexOf("execute v_head || v_new || '$function$';");
+      const pin = f.indexOf("execute format('comment on function public.invariants_check(boolean) is %L', v_pin_db);");
+      const full = f.indexOf("  v_res := public.invariants_check(false);");
+      const ledger = f.indexOf("insert into public.migration_ledger (name)");
+      expect(ddl > 0 && ddl < red23 && red23 < reprint && reprint < pin && pin < full && full < ledger, `${n}: порядок DDL → зріз старого №23 → передрук → пін → повний сторож → леджер`).toBe(true);
+      expect(count(f, "  v_res := public.invariants_check(false);"), `${n}: повний сторож рівно один`).toBe(1);
+      expect(f, `${n}: явний грант service_role`).toContain("grant select, insert, update, delete on table public.platform_operators, public.platform_accounts, public.platform_log to service_role;");
+      expect(f, `${n}: позитивний асерт прав service_role`).toContain("select 'no_service_role:' || t || ':' || p");
+    }
+    /* KNOWN_RED генератора — лише №13: «полагодити» A-1 внесенням auth_orphan_accounts
+       у допуск означало б осліпити сторож і після DDL. */
+    expect(GEN).toContain('const KNOWN_RED = ["gcal_sync_overdue"];');
+    expect(count(APPLY, "where e.value->>'check' not in ('gcal_sync_overdue');")).toBe(1);
+    expect(MIG).toContain("where e.value->>'check' not in ('gcal_sync_overdue')\n     and not (e.value->>'check' = 'ledger_md5'");
   });
   it("запити №3/№22/№23/№24 у накаті — дослівно з тіла (не переписані)", () => {
     const body = RP_NEW;
@@ -233,8 +247,13 @@ describe("0206 — фрагменти і смоук", () => {
       expect(count(DRYRUN, q), `№ ${label} у dryrun`).toBeGreaterThanOrEqual(1);
     }
   });
-  it("відкат: відмовляє на непорожніх таблицях, знімає функцію й таблиці від залежних до базової, рядок леджера — ДО повного сторожа", () => {
+  it("відкат: відмовляє на непорожніх таблицях і на живих auth-акаунтах операторів, знімає функцію й таблиці від залежних до базової, рядок леджера — ДО повного сторожа", () => {
     for (const t of TABLES) expect(ROLLBACK).toContain(`(select count(*) from public.${t}) > 0 then`);
+    /* р2, L-6: передумова шукає акаунти операторів за МЕТАДАНИМИ, а не за рядком
+       (FK з каскадом робив «рядок є» тотожним «таблиця не порожня»). */
+    expect(ROLLBACK).toContain("where u.raw_user_meta_data->>'platform' = 'operator'");
+    expect(ROLLBACK).toContain("or u.raw_app_meta_data->>'platform' = 'operator') then");
+    expect(ROLLBACK).not.toContain("join public.platform_operators o on o.id = u.id");
     const order = ["drop function if exists public.platform_clinic_stats();", "drop table if exists public.platform_log;",
       "drop table if exists public.platform_accounts;", "drop table if exists public.platform_operators;",
       `delete from public.migration_ledger where name = '${MIG_FILE}';`, "  v_res := public.invariants_check(false);"];
@@ -250,10 +269,37 @@ describe("0206 — фрагменти і смоук", () => {
     expect(FALSIFY).toContain("alter table public.platform_log add column probe_col text;");
     expect(FALSIFY).toContain("alter table public.platform_log drop column probe_col;");
     expect(FALSIFY).toContain("array['new:t:platform_accounts:authenticated->SELECT']::text[]");
-    expect(FALSIFY).toContain("'changed:t:platform_log:8:0a75467baf7d->9:%'");
+    expect(codeOf(FALSIFY)).toContain("'changed:t:platform_log:8:0a75467baf7d->9:%'");
   });
-  it("смоук: один блок, 26 перевірок, SMOKE_OK / SMOKE_SKIP, без commit, константи = файлу", () => {
+  /* р2, M-1: проба ролей не вакуумна — перевіряє, що роль перемкнулась, і що текст
+     відмови називає САМЕ обʼєкт; у falsify — червона базова лінія з грантом. */
+  it("проба клієнтських ролей: перемикання перевірено, відмова названа, у falsify — E/F червоні", () => {
+    for (const [n, f] of [["DRYRUN", DRYRUN], ["FALSIFY", FALSIFY], ["SMOKE", SMOKE]] as const) {
+      expect(f, `${n}: перевірка, що роль справді перемкнулась`).toContain("if current_user <> v_role then");
+      expect(f, `${n}: відмова на таблиці мусить назвати таблицю`).toContain("if position(v_tbl in v_msg) = 0 then");
+      expect(f, `${n}: відмова на функції мусить назвати функцію`).toContain("if position('platform_clinic_stats' in v_msg) = 0 then");
+      expect(f, `${n}: роль повертається до postgres`).toContain("if current_user <> 'postgres' then");
+    }
+    expect(FALSIFY).toContain("grant select on table public.platform_operators to anon;");
+    expect(FALSIFY).toContain("grant execute on function public.platform_clinic_stats() to authenticated;");
+    expect(FALSIFY).toContain("raise exception 'falsify: E — проба ролей НЕ почервоніла з грантом';");
+    expect(FALSIFY).toContain("raise exception 'falsify: F — проба ролей НЕ почервоніла з грантом';");
+    expect(FALSIFY).toContain("verdict=PASS probes=A,B,C,D,E,F");
+    expect(DRYRUN).toContain("probes=24,chk,pii,action,acl,stats,cascade");
+    /* E/F стоять ПІСЛЯ поведінкової проби D і перед вердиктом. */
+    expect(FALSIFY.indexOf("-- ── E. червона базова лінія")).toBeGreaterThan(FALSIFY.indexOf("-- ── D. поведінка ──"));
+    expect(FALSIFY.indexOf("verdict=PASS probes=A,B,C,D,E,F")).toBeGreaterThan(FALSIFY.indexOf("-- ── F. червона базова лінія"));
+  });
+  it("смоук: один блок, бюджет зовні, 26 перевірок, SMOKE_OK / SMOKE_SKIP, без commit, власний пробний центр, константи = файлу", () => {
     expect(count(SMOKE, "do $smoke$")).toBe(1);
+    expect(SMOKE).toMatch(/^set statement_timeout = '5min';\ndo \$smoke\$/m);
+    /* Три повні прогони сторожа (р2, L-7): зелена базова лінія; №24 з ОБОМА
+       акаунтами без рядка (червона базова лінія); після рядка оператора — рівно другий. */
+    expect(count(SMOKE, "  v_res := public.invariants_check(false);")).toBe(3);
+    expect(SMOKE).toContain("SMOKE_FAIL(orphan): базова лінія");
+    expect(count(SMOKE, "jsonb_build_object('managed', 'true', 'platform', 'operator'), now() - interval '1 hour')"), "метадані двох акаунтів мусять бути однакові").toBe(2);
+    expect(SMOKE).toContain("insert into public.clinics (name) values ('Смоук 0206 ' || v_sfx) returning id into v_c;");
+    expect(DRYRUN).toContain("insert into public.clinics (name) values ('Проба 0206 ' || v_sfx) returning id into v_c;");
     expect(SMOKE).toContain("if (v_res->>'checked')::int <> 26 then");
     expect(SMOKE).toContain("raise exception 'SMOKE_OK:");
     expect(SMOKE).toContain("raise exception 'SMOKE_SKIP:");
@@ -302,6 +348,31 @@ describe("0206 — контракт і код контуру", () => {
     for (const t of TABLES) expect(TYPES).toContain(`      ${t}: {`);
     expect(TYPES).toContain("      platform_clinic_stats: {");
     expect(read("app/platform/page.tsx")).toContain('export const metadata = { title: "Платформа — RadFlow" };');
+  });
+  it("ключі details журналу: один перелік на запис і читання, без перетину з ПДн-CHECK", () => {
+    const known = [...PLATFORM_LOG_DETAIL_KEYS];
+    const forbidden = new Set<string>(PLATFORM_LOG_FORBIDDEN_KEYS);
+    expect(known.filter((k) => forbidden.has(k)), "відомий ключ journal-у заборонений CHECK-ом — запис упав би на кожній дії").toEqual([]);
+    expect(known).toEqual(["from", "to", "reason", "fields", "plan", "paid_until", "bootstrap"]);
+    /* Запис: platformLog перебирає САМЕ цей перелік (не свою копію); читання —
+       обидва роути журналу йдуть через hydrateLogRows → projectLogDetails. */
+    const auth = read("lib/platformAuth.ts");
+    expect(auth).toContain("for (const k of PLATFORM_LOG_DETAIL_KEYS) {");
+    expect(auth).toContain("details: projectLogDetails(r.details),");
+    for (const f of ["app/api/platform/log/route.ts", "app/api/platform/clinics/[id]/route.ts"]) {
+      const r = read(f);
+      expect(r, `${f} читає журнал повз hydrateLogRows`).toContain("await hydrateLogRows(admin,");
+      expect(r, `${f} тримає свою копію переліку колонок`).toContain(".select(PLATFORM_LOG_COLUMNS)");
+    }
+    expect(projectLogDetails({ from: "a", to: "b", leaked: 1, email: "x" })).toEqual({ from: "a", to: "b" });
+    expect(projectLogDetails("рядок")).toEqual({});
+    expect(projectLogDetails(["масив"])).toEqual({});
+    expect(projectLogDetails(null)).toEqual({});
+    /* Усе, що platformLogText уміє показати, — із цього ж переліку. */
+    const contract = read("lib/platformContract.ts");
+    const shown = [...contract.matchAll(/typeof d\.(\w+) === "string"|Array\.isArray\(d\.(\w+)\)/g)].map((m) => m[1] ?? m[2]);
+    expect(shown.length).toBeGreaterThan(0);
+    for (const k of shown) expect(known, `platformLogText читає ключ ${k}, якого немає в PLATFORM_LOG_DETAIL_KEYS`).toContain(k);
   });
   it("AGENTS.md описує контур платформи", () => {
     expect(AGENTS).toMatch(/## Контур платформ[иы] \(с84 \/ 0206\)/);

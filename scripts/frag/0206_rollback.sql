@@ -3,6 +3,10 @@
 -- викидаються мовчки; спершу вивантажити і спорожнити руками за явним списком),
 -- повертає тіло сторожа до 0205 (ті самі якорі назад), самопін 0205, знімає рядок
 -- леджера. ОДНА транзакція.
+-- ⚠️ АКАУНТИ ОПЕРАТОРІВ В auth.users: після відкату старе тіло №24 назве кожен
+--    акаунт без профілю, старший за 15 хв, сиротою — і фінальний сторож тут
+--    ВІДМОВИТЬ (fail-loud). Перед відкатом видалити auth-акаунти операторів за
+--    явним списком id (auth.admin.deleteUser) або прийняти червоний №24 свідомо.
 -- ⚠️ Бюджет часу — ЗОВНІ блоку: `set statement_timeout` усередині `do` інертний
 --    (канон 0192). MCP жене батч однією транзакцією, після `raise` set відкочується.
 set statement_timeout = '5min';
@@ -10,7 +14,7 @@ do $back$
 declare
   v_def text; v_body text; v_src text; v_head text; v_new text;
   v_hits int; v_rows int; v_res jsonb; v_pin_db text; v_bad text[]; v_tmp text[];
-  v_failed text[]; v_acl text; v_off23 text[];
+  v_failed text[]; v_acl text;
   v_from constant text[] := array[
     $q$  --        сьогодні має грант.
   --     ⚠️ 0206 (с84): ОПЕРАТОР ПЛАТФОРМИ — акаунт `auth.users` БЕЗ профілю за
@@ -50,7 +54,7 @@ $q$,
 $q$,
     $q$      ('k:patient_cases','4:882687b5af46'),
       ('k:platform_accounts','8:e27d5034f4e4'),
-      ('k:platform_log','8:3c2b9b4b1a90'),
+      ('k:platform_log','8:7040d6ef2253'),
       ('k:platform_operators','7:609ad073e819'),
 $q$
   ];
@@ -98,14 +102,26 @@ begin
     raise exception 'back: invariants_check не знайдено';
   end if;
   v_src := replace(v_body, chr(13), '');
-  if md5(v_src) is distinct from '51abb8c19bc86645d6b40e31afcdccd4' or length(v_src) <> 181235 then
+  if md5(v_src) is distinct from '51b87021f7306ff1ef2a864bc1d8d74c' or length(v_src) <> 181235 then
     raise exception 'back: у проді не 0206 (% / %) — правка наосліп заборонена', md5(v_src), length(v_src);
   end if;
   v_head := substr(v_def, 1, position('AS $function$' in v_def) + 12);
   if obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
-     is distinct from 'guard_body_md5=51abb8c19bc86645d6b40e31afcdccd4;len=181235' then
+     is distinct from 'guard_body_md5=51b87021f7306ff1ef2a864bc1d8d74c;len=181235' then
     raise exception 'back: самопін % не збігається з тілом 0206 — спершу розібратись',
       coalesce(obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc'), '(NULL)');
+  end if;
+
+  -- ── 0. Передумова: жодного auth-акаунта оператора (інакше старе тіло №24 назве
+  --    його сиротою і фінальний сторож відмовить — краще сказати це ТУТ, імʼям кроку).
+  --    Шукаємо за МЕТАДАНИМИ, а не за рядком (ревʼю с84 р2, L-6): FK з каскадом
+  --    робить «рядок є» рівним «таблиця не порожня» (крок 1), а таблицю могли
+  --    спорожнити руками — акаунти тоді лишились би. Роути ставлять
+  --    user_metadata.platform='operator' кожному оператору (і вимкненому теж). ──
+  if exists (select 1 from auth.users u
+              where u.raw_user_meta_data->>'platform' = 'operator'
+                 or u.raw_app_meta_data->>'platform' = 'operator') then
+    raise exception 'back: в auth.users лишаються акаунти операторів (метадані platform) — спершу видалити їх за явним списком id (або прийняти червоний №24)';
   end if;
 
   -- ── 1. Обʼєкти пакета: лише порожні (дані не викидаємо мовчки) ──

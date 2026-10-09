@@ -71,7 +71,7 @@ export async function POST(req: Request) {
   });
   if (iErr) {
     const { error: dErr } = await admin.auth.admin.deleteUser(id);
-    if (dErr) logError({ event: "platform.operator_compensation_failed", actorId: operator.id, entityId: id, errorCode: dErr.message ?? null });
+    if (dErr) logError({ event: "platform.operator_compensation_failed", actorId: operator.id, entityId: id, errorCode: "deleteUser", message: dErr.message });
     return NextResponse.json({ error: safeDbError("api/platform/operators.insert", iErr) }, { status: 500 });
   }
 

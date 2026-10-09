@@ -60,9 +60,28 @@ export const OPERATOR_NAME_MAX = 200;
 
 /** Ключі `details`, яких у журналі платформи бути не може (CHECK `platform_log_no_pii_chk`). */
 export const PLATFORM_LOG_FORBIDDEN_KEYS = [
-  "patient_name", "patient_phone", "patient_email", "patient_dob", "name", "phone",
-  "email", "dob", "password", "token", "note", "notes", "studies",
+  "patient_name", "patient_phone", "patient_email", "patient_dob", "name", "phone", "email", "dob",
+  "contraindications", "note", "notes", "studies", "weight",
+  "refresh_token", "access_token", "id_token", "token", "code", "client_secret", "calendar_id", "google_email", "account_email",
+  "password", "temp_password", "tmp_password", "pass", "secret",
 ] as const;
+
+/** Ключі `details`, які журнал платформи ЗНАЄ. Той самий перелік — allowlist при
+    записі (`platformLog`) і біла проекція при читанні (`projectLogDetails` у
+    роутах): ключ поза ним не потрапляє в БД і не покидає сервер — як чотири
+    лінії PII у `important_events` (`DETAIL_KEYS` у /api/journal). Новий ключ =
+    сюди + підпис у `platformLogText` + тест. Перетин із FORBIDDEN — порожній
+    (пін у tests/platformOperators0206.test.ts). */
+export const PLATFORM_LOG_DETAIL_KEYS = ["from", "to", "reason", "fields", "plan", "paid_until", "bootstrap"] as const;
+export type PlatformLogDetailKey = (typeof PLATFORM_LOG_DETAIL_KEYS)[number];
+
+export function projectLogDetails(raw: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const d = raw as Record<string, unknown>;
+  for (const k of PLATFORM_LOG_DETAIL_KEYS) if (d[k] !== undefined) out[k] = d[k];
+  return out;
+}
 
 /* ── Форми відповідей роутів (те, що читає консоль) ───────────────────────── */
 

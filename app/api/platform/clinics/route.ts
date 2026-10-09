@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformOperator } from "@/lib/platformAuth";
 import { safeDbError } from "@/lib/validation";
+import { logError } from "@/lib/serverLog";
 import { effectiveStatus, type ClinicListItem, type ClinicStats } from "@/lib/platformContract";
 
 /* ===== GET /api/platform/clinics — центри як клієнти платформи (0206, с84) =====
@@ -9,7 +10,9 @@ import { effectiveStatus, type ClinicListItem, type ClinicStats } from "@/lib/pl
    не бути = trial) і агрегати `platform_clinic_stats()` (штат, кабінети,
    записи за 30 днів, остання активність, інтеграції — лічильники, не рядки).
    Пацієнтських даних цей роут не читає і читати не має: оператор керує центрами
-   як клієнтами. Межа: PostgREST віддає до 1000 рядків на читання — центрів
+   як клієнтами. Агрегати — best-effort: збій `platform_clinic_stats()` дає
+   `stats: null` у кожному рядку і слід у лозі, а не 500 на весь перелік — це
+   точка входу оператора (ревʼю с84 р2, L-5). Межа: PostgREST віддає до 1000 рядків на читання — центрів
    на платформі на порядки менше; стане більше — пагінація, а не збільшення стелі. */
 
 export const dynamic = "force-dynamic";
@@ -26,10 +29,10 @@ export async function GET(req: Request) {
   ]);
   if (cErr) return NextResponse.json({ error: safeDbError("api/platform/clinics.clinics", cErr) }, { status: 500 });
   if (aErr) return NextResponse.json({ error: safeDbError("api/platform/clinics.accounts", aErr) }, { status: 500 });
-  if (sErr) return NextResponse.json({ error: safeDbError("api/platform/clinics.stats", sErr) }, { status: 500 });
+  if (sErr) logError({ event: "platform.stats_read_failed", actorId: gate.operator.id, errorCode: sErr.code ?? null, message: sErr.message });
 
   const accById = new Map((accounts ?? []).map((a) => [String(a.clinic_id).toLowerCase(), a]));
-  const statsById = new Map(((stats ?? []) as Array<ClinicStats & { clinic_id: string }>).map((s) => [String(s.clinic_id).toLowerCase(), s]));
+  const statsById = new Map(((sErr ? [] : stats ?? []) as Array<ClinicStats & { clinic_id: string }>).map((s) => [String(s.clinic_id).toLowerCase(), s]));
 
   const items: ClinicListItem[] = (clinics ?? []).map((c) => {
     const key = String(c.id).toLowerCase();

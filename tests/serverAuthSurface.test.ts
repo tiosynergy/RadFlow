@@ -63,7 +63,7 @@ const gated = (s: string) =>
    його стереже замість ролі. Виняток без причини — місце, куди тихо додають
    новий незахищений роут. */
 const PRE_AUTH: Record<string, string> = {
-  "/api/auth/login": "вхід: сесії ще немає. Стереже rate-limit по IP (15/5хв) і по ідентифікатору (8/5хв); service-role потрібен, щоб знайти email за логіном ДО автентифікації, а з 0206 — ПІСЛЯ неї прочитати за id щойно відкритої сесії, хто увійшов (оператор платформи → kind=platform) і чи центр не призупинений (suspended/archived → сесія гаситься, 403)",
+  "/api/auth/login": "вхід: сесії ще немає. Стереже rate-limit по IP (15/5хв) і по ідентифікатору (8/5хв); service-role потрібен, щоб знайти email за логіном ДО автентифікації, а з 0206 — ПІСЛЯ неї прочитати за id щойно відкритої сесії, хто увійшов (оператор платформи → kind=platform) і чи центр не призупинений (suspended/archived → 403). Cookie сесії потрапляють у відповідь лише через commit() відкладеного клієнта ПІСЛЯ вердикту — відмова не залежить від signOut()",
   "/api/auth/login-available": "перевірка вільності логіна у формі реєстрації: сесії немає; rate-limit по IP і по логіну",
   "/api/account/set-password": "встановлення пароля за ОДНОРАЗОВИМ invite-токеном: сесії немає за побудовою. Стереже форма токена (hex 32-80) плюс rate-limit по IP. с82: після клейму токена й зміни пароля роут ще й ВІДКРИВАЄ сесію клієнтом сесії (автовхід) — лише якщо в браузері немає іншої живої сесії",
   "/api/clinic/delete-confirm": "підтвердження видалення центру за посиланням з листа: сесії немає. Стереже пара rid(uuid) плюс token(hex 48) з листа",
@@ -140,6 +140,28 @@ describe("серверна поверхня авторизації — роут�
       if (Math.min(...pos) > adm) late.push(pathOf(f));
     }
     expect(late, "у роуті service-role береться РАНІШЕ за гейт — перевірка ролі перестала бути умовою доступу до даних").toEqual([]);
+  });
+
+  /* 0206 (ревʼю с84, лінза C): /api/auth/login ВІДМОВЛЯЄ після того, як GoTrue
+     вже відкрив сесію (вимкнений оператор, призупинений центр). Відмова не має
+     триматись на signOut() — він ходить у мережу і при збої НЕ знімає локальну
+     сесію (403 поїхав би з живими cookie). Тому сесія — на відкладеному клієнті:
+     cookie потрапляють у відповідь РІВНО одним commit(), і він стоїть після
+     вердикту; звичайний createClient() у роуті не зʼявляється. */
+  it("/api/auth/login: cookie сесії комітяться один раз і лише після вердикту", () => {
+    const s = src("app/api/auth/login/route.ts");
+    expect(s, "вхід більше не на відкладеному клієнті").toMatch(/const \{ supabase, commit \} = await createDeferredClient\(\);/);
+    expect(s, "у /api/auth/login зʼявився звичайний createClient() — cookie лягли б до вердикту").not.toMatch(/createClient\(/);
+    const commits = s.match(/\bcommit\(\);/g) || [];
+    expect(commits.length, "commit() має бути рівно один").toBe(1);
+    const verdict = s.indexOf("await loginVerdict(admin, uid)");
+    expect(verdict, "вердикт входу зник").toBeGreaterThan(-1);
+    expect(s.indexOf("commit();"), "commit() стоїть ДО вердикту").toBeGreaterThan(verdict);
+    expect(s.indexOf("commit();"), "commit() стоїть ДО відмов").toBeGreaterThan(s.lastIndexOf("return refuse("));
+    /* Відкладений клієнт: setAll лише збирає, commit пише. */
+    const srv = src("lib/supabase/server.ts");
+    expect(srv).toMatch(/setAll\(cookiesToSet: Parameters<SetAllCookies>\[0\]\) \{ pending\.push\(\.\.\.cookiesToSet\); \}/);
+    expect(srv).toMatch(/commit\(\): void \{ for \(const \{ name, value, options \} of pending\) cookieStore\.set\(name, value, options\); pending\.length = 0; \}/);
   });
 });
 
@@ -247,6 +269,13 @@ describe("серверна поверхня авторизації — самі 
       .toMatch(/if \(!operator\) \{(?:(?!return )[\s\S]){0,600}return err\("Недостатньо прав", 403\);/);
     expect(body, "зникла відмова 403 для вимкненого оператора")
       .toMatch(/if \(!operator\.active\) \{(?:(?!return )[\s\S]){0,400}return err\("Доступ оператора вимкнено", 403\);/);
+    /* Збій читання рядка — не «немає прав», а «не знаємо»: 503, і теж до успіху
+       (ревʼю с84, лінза B: з одним null збій БД виглядав як втрата прав). */
+    expect(body, "зникла відмова 503 для збою читання рядка оператора")
+      .toMatch(/if \(!read\.ok\) \{(?:(?!return )[\s\S]){0,400}return err\("Тимчасова помилка перевірки прав\. Спробуйте за хвилину\.", 503\);/);
+    expect(body.indexOf("if (!read.ok) {"), "перевірка збою читання стоїть не між читанням і !operator")
+      .toBeGreaterThan(row);
+    expect(body.indexOf("if (!read.ok) {")).toBeLessThan(body.indexOf("if (!operator) {"));
     /* Читання рядка — за id сесії, не за параметром запиту. */
     expect(s, "platformOperatorOf фільтрує не за переданим id")
       .toMatch(/\.from\("platform_operators"\)\s*\.select\("id, email, full_name, active"\)\s*\.eq\("id", userId\)\s*\.maybeSingle\(\)/);

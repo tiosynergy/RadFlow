@@ -10,8 +10,9 @@ import { CLINIC_STATUSES, STATUS_REASON_MAX, effectiveStatus, statusNeedsReason 
    Причина ОБОВʼЯЗКОВА для suspended / archived (центр втрачає вхід — слід має
    пояснювати чому); для trial / active — за бажанням. Рядка обліку може не бути
    (= trial) — тоді він створюється тут. Зміна на той самий статус — no-op без
-   запису в журнал (журнал — про дії, а не про кліки). Єдине застосування
-   статусу в коді 0206 — `/api/auth/login`: персонал центру зі статусом
+   запису в журнал і без створення рядка (журнал — про дії, а не про кліки).
+   Статус у коді 0206 застосовується при ВІДКРИТТІ сесії (`loginVerdict`:
+   /api/auth/login і автовхід після /set-password): персонал центру зі статусом
    suspended / archived не входить. */
 
 const sStatus = z.object({
@@ -45,7 +46,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     .from("platform_accounts").select("clinic_id, status").eq("clinic_id", clinicId).maybeSingle();
   if (aErr) return NextResponse.json({ error: safeDbError("api/platform/clinic.status.read", aErr) }, { status: 500 });
   const from = effectiveStatus(acc);
-  if (acc && from === status) return NextResponse.json({ ok: true, unchanged: true, status });
+  /* Той самий статус — no-op і БЕЗ рядка теж: «trial → trial» для центру без
+     обліку не створює рядка і не пише сліду (ревʼю с84, лінза B). */
+  if (from === status) return NextResponse.json({ ok: true, unchanged: true, status });
 
   const now = new Date().toISOString();
   const patch = {

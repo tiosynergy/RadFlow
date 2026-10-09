@@ -213,11 +213,14 @@ const GATE_APART = ["/ceo", "/search"];
    рядок `platform_operators`, який читає лише service-role на сервері
    (`platformSession()` у lib/platformAuth.ts). Цей перелік — третя категорія
    поруч із PUBLIC і GATES, і він так само мусить збігатись із деревом в обидва
-   боки. Пін тримає ВЕСЬ ланцюг до наслідку: без сесії → /login з поверненням;
-   сесія без рядка оператора → /queue; вимкнений оператор → рендер відмови з
-   кнопкою виходу (редірект дав би петлю з middleware, який веде оператора за
-   прапорцем `app_metadata` саме сюди). */
-const HEAD_PLATFORM = /const \{ user, operator \} = await platformSession\(\); if \(!user\) redirect\("\/login\?redirect=\/platform"\); if \(!operator\) redirect\("\/queue"\); if \(!operator\.active\) \{ return <RoleNotice title="Доступ оператора вимкнено"/;
+   боки. Пін тримає ВЕСЬ ланцюг станів до наслідку, і кожен наслідок обраний так,
+   щоб НЕ вести туди, звідки middleware повернув би назад (ревʼю с84, лінза B —
+   петля /platform ⇄ /queue, коли прапорець оператора є, а рядка немає або він
+   не прочитався): без сесії → /login з поверненням; без service-ключа або при
+   збої читання → РЕНДЕР екрана з кнопкою виходу; сесія без рядка → з прапорцем
+   /api/auth/reset?reason=platform_missing (вихід), без прапорця /queue;
+   вимкнений оператор → рендер відмови з кнопкою виходу. */
+const HEAD_PLATFORM = /const s = await platformSession\(\); if \(s\.state === "anonymous"\) redirect\("\/login\?redirect=\/platform"\); if \(s\.state === "unconfigured"\) \{ return <RoleNotice title="Сервер не налаштовано" [^}]*\} if \(s\.state === "read_failed"\) \{ return <RoleNotice title="Тимчасова помилка" [^}]*\} if \(s\.state === "stranger"\) redirect\(s\.claim \? "\/api\/auth\/reset\?reason=platform_missing" : "\/queue"\); if \(!s\.operator\.active\) \{ return <RoleNotice title="Доступ оператора вимкнено"/;
 const PLATFORM_GATES: Record<string, { why: string }> = {
   "/platform": { why: "консоль оператора платформи: право — рядок platform_operators, не роль профілю; гейт — platformSession()" },
 };
@@ -591,15 +594,26 @@ describe("поверхня авторизації — контур платфо�
     expect(s, `${route}: service-role не імпортують у сторінку — лише через lib/platformAuth`).not.toMatch(/from "@\/lib\/supabase\/admin"/);
   });
 
-  it("platformSession — рядок оператора читається лише за id ПЕРЕВІРЕНОЇ сесії", () => {
+  it("platformSession — рядок оператора читається лише за id ПЕРЕВІРЕНОЇ сесії; три стани читання розрізнені", () => {
     const s = src("lib/platformAuth.ts");
     const user = s.indexOf("auth.getUser()");
     const read = s.indexOf('.from("platform_operators")');
     expect(user, "у lib/platformAuth.ts зник виклик getUser()").toBeGreaterThan(-1);
     expect(read, "у lib/platformAuth.ts зникло читання platform_operators").toBeGreaterThan(-1);
     expect(s, "рядок оператора шукається не за user.id сесії")
-      .toMatch(/platformOperatorOf\(createAdminClient\(\), user\.id\)/);
+      .toMatch(/const read = await platformOperatorOf\(createAdminClient\(\), user\.id\);/);
     expect(s, "requirePlatformOperator не читає рядок за id сесії")
-      .toMatch(/const operator = await platformOperatorOf\(admin, user\.id\);/);
+      .toMatch(/const read = await platformOperatorOf\(admin, user\.id\);/);
+    /* «Не прочиталось» ≠ «рядка немає»: перше — read_failed (екран), друге —
+       stranger з ознакою прапорця (вихід або клінічний контур). Злиття їх в один
+       null і було петлею. */
+    expect(s, "platformSession більше не розрізняє збій читання і відсутність рядка")
+      .toMatch(/if \(!read\.ok\) return \{ state: "read_failed", user: \{ id: user\.id \} \}; if \(!read\.operator\) return \{ state: "stranger", user: \{ id: user\.id \}, claim: isOperatorByClaim\(user\) \}; return \{ state: "operator", user: \{ id: user\.id \}, operator: read\.operator \};/);
+    /* /api/auth/reset приймає лише відомі причини: значення з URL у розмітку
+       /login не потрапляє (там зіставлення з фіксованими текстами). */
+    const reset = src("app/api/auth/reset/route.ts");
+    expect(reset, "розлогін більше не обмежує reason переліком").toMatch(/const REASONS = new Set\(\["profile_missing", "platform_missing"\]\);/);
+    expect(reset).toMatch(/url\.searchParams\.set\("reason", want && REASONS\.has\(want\) \? want : "profile_missing"\);/);
+    expect(src("components/LoginPage.tsx"), "/login не пояснює platform_missing").toMatch(/searchParams\.get\("reason"\) === "platform_missing"/);
   });
 });

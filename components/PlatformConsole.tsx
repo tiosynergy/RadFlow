@@ -49,6 +49,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
+  /* Ключ дати (paid_until, YYYY-MM-DD) — без Date: `new Date("2026-10-15")` — це
+     UTC-північ, і на захід від Гринвіча показалося б 14.10. */
+  const key = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (key) return `${key[3]}.${key[2]}.${key[1]}`;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -103,7 +107,7 @@ function SecretBox({ secret, label, onCopied }: { secret: string; label: string;
   }
   return (
     <div className="pf-secret" role="status">
-      <span>🔑 {label}:</span>
+      <span><span aria-hidden="true">🔑</span> {label}:</span>
       <code>{secret}</code>
       <button type="button" className="btn btn-secondary btn-sm" onClick={copy}>Скопіювати</button>
       <span className="pf-hint">Показано один раз — передайте людині поза системою; потім вона може скинути пароль сама через іншого оператора.</span>
@@ -231,7 +235,7 @@ type ClinicCardData = {
   rooms: Array<{ id: string; name: string; modality: string; apparatus_model: string | null; active: boolean }>;
   integrations: {
     keys: Array<{ id: string; name: string; key_prefix: string; active: boolean; revoked_at: string | null; created_at: string; last_used_at: string | null }>;
-    webhooks: Array<{ id: string; url: string; enabled: boolean; created_at: string }>;
+    webhooks: Array<{ id: string; host: string; enabled: boolean; created_at: string }>; // host — з маскою ліворуч (див. роут)
     gcal: { status: string; enabled: boolean; last_sync_at: string | null; last_error_code: string | null } | null;
   };
   log: PlatformLogItem[];
@@ -264,12 +268,14 @@ function ClinicCard({ id, onBack, notify }: { id: string; onBack: () => void; no
   return (
     <div className="pf-page">
       <div className="pf-card">
-        <h2>
-          <span>{clinic.name}</span>
+        {/* Заголовок — лише назва: бейдж і кнопка поза <h2>, інакше імʼя
+            заголовка для ридера — «Центр Один Пробний ← До переліку». */}
+        <div className="pf-card-head">
+          <h2>{clinic.name}</h2>
           <StatusBadge status={data.status} />
           <span className="spacer" />
           <button type="button" className="btn btn-secondary btn-sm" onClick={onBack}>← До переліку</button>
-        </h2>
+        </div>
         <dl className="pf-kv">
           <dt>Місто</dt><dd>{clinic.city || "—"}</dd>
           <dt>Адреса</dt><dd>{clinic.address || "—"}</dd>
@@ -340,7 +346,7 @@ function ClinicCard({ id, onBack, notify }: { id: string; onBack: () => void; no
             <dt>API-ключі</dt>
             <dd>{data.integrations.keys.length ? data.integrations.keys.map((k) => `${k.name} (${k.key_prefix}…, ${k.active && !k.revoked_at ? "активний" : "відкликано"}${k.last_used_at ? `, останній виклик ${fmtDate(k.last_used_at)}` : ""})`).join("; ") : "немає"}</dd>
             <dt>Вебхуки</dt>
-            <dd>{data.integrations.webhooks.length ? data.integrations.webhooks.map((w) => `${w.url} (${w.enabled ? "увімкнено" : "вимкнено"})`).join("; ") : "немає"}</dd>
+            <dd>{data.integrations.webhooks.length ? data.integrations.webhooks.map((w) => `${w.host} (${w.enabled ? "увімкнено" : "вимкнено"})`).join("; ") : "немає"}</dd>
             <dt>Google Calendar</dt>
             <dd>{data.integrations.gcal ? `${data.integrations.gcal.status}${data.integrations.gcal.enabled ? "" : " (вимкнено)"}${data.integrations.gcal.last_sync_at ? `, синк ${fmtDateTime(data.integrations.gcal.last_sync_at)}` : ""}${data.integrations.gcal.last_error_code ? `, помилка ${data.integrations.gcal.last_error_code}` : ""}` : "не підключено"}</dd>
           </dl>
@@ -398,8 +404,9 @@ function StatusPanel({ clinicId, current, account, onDone, notify }: {
           <input className="inp" value={reason} maxLength={STATUS_REASON_MAX} onChange={(e) => setReason(e.target.value)} placeholder="напр. несплата, тест, прохання клієнта" aria-required={needReason} />
         </label>
         <div className="pf-hint">
-          «Призупинено» і «Архів» закривають вхід персоналу центру (при наступному вході; живі сесії не перериваються).
-          Статус не залежить від оплати — його змінює лише оператор.
+          «Призупинено» і «Архів» закривають вхід персоналу центру через сторінку входу RadFlow. Це обмеження входу, а не
+          блокування даних: живі сесії, направники й керівники центру статусом не зупиняються. Статус не залежить від
+          оплати — його змінює лише оператор. Причину бачать лише оператори; даних пацієнтів сюди не пишіть.
         </div>
         <div className="pf-actions">
           <button type="submit" className="btn btn-primary" disabled={!changed || busy} aria-busy={busy}>
@@ -418,18 +425,34 @@ function AccountPanel({ clinicId, account, paid, onDone, notify }: {
   const [paidUntil, setPaidUntil] = useState(account?.paid_until ?? "");
   const [notes, setNotes] = useState(account?.notes ?? "");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { setPlan(account?.plan ?? ""); setPaidUntil(account?.paid_until ?? ""); setNotes(account?.notes ?? ""); }, [account]);
+  /* Картка перечитується після кожної дії (і сусідньої — зміни статусу); форму
+     під руками не скидаємо: поле, яке людина НЕ правила, підтягує нове значення
+     з обліку, а правлене лишається як є (ревʼю с84, лінза B). */
+  const prev = useRef(account);
+  useEffect(() => {
+    const was = prev.current;
+    prev.current = account;
+    setPlan((v) => (v === (was?.plan ?? "") ? account?.plan ?? "" : v));
+    setPaidUntil((v) => (v === (was?.paid_until ?? "") ? account?.paid_until ?? "" : v));
+    setNotes((v) => (v === (was?.notes ?? "") ? account?.notes ?? "" : v));
+  }, [account]);
 
-  const dirty = plan !== (account?.plan ?? "") || paidUntil !== (account?.paid_until ?? "") || notes !== (account?.notes ?? "");
+  /* Порівняння — з ОБРІЗАНИМ значенням (ревʼю с84 р2, L-3): сервер зберігає trim(),
+     і «  Базовий » після збереження інакше лишалось би «брудним» назавжди, а кожен
+     клік писав би ще один слід у журнал. */
+  const planDirty = plan.trim() !== (account?.plan ?? "");
+  const paidDirty = paidUntil !== (account?.paid_until ?? "");
+  const notesDirty = notes.trim() !== (account?.notes ?? "");
+  const dirty = planDirty || paidDirty || notesDirty;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!dirty || busy) return;
     setBusy(true);
     const body: Record<string, string | null> = {};
-    if (plan !== (account?.plan ?? "")) body.plan = plan.trim() || null;
-    if (paidUntil !== (account?.paid_until ?? "")) body.paid_until = paidUntil || null;
-    if (notes !== (account?.notes ?? "")) body.notes = notes.trim() || null;
+    if (planDirty) body.plan = plan.trim() || null;
+    if (paidDirty) body.paid_until = paidUntil || null;
+    if (notesDirty) body.notes = notes.trim() || null;
     const r = await api<{ ok: true }>(`/api/platform/clinics/${clinicId}/account`, { method: "POST", body: JSON.stringify(body) });
     setBusy(false);
     if (!r.ok) { notify(r.error, "error"); return; }
@@ -439,7 +462,11 @@ function AccountPanel({ clinicId, account, paid, onDone, notify }: {
 
   return (
     <div className="pf-card">
-      <h2>Тариф і оплата <span className="spacer" />{paid && <span className={"badge " + paid.cls}>{paid.text}</span>}</h2>
+      <div className="pf-card-head">
+        <h2>Тариф і оплата</h2>
+        <span className="spacer" />
+        {paid && <span className={"badge " + paid.cls}>{paid.text}</span>}
+      </div>
       <form className="pf-form" onSubmit={submit}>
         <div className="fld-row">
           <label className="fld">
@@ -508,11 +535,19 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
     if (!confirm || confirmBusy) return;
     setConfirmBusy(true);
     if (confirm.kind === "active") {
-      const r = await api<{ ok: true }>(`/api/platform/operators/${confirm.row.id}/active`, { method: "POST", body: JSON.stringify({ active: confirm.active }) });
+      const r = await api<{ ok: true; claim_synced?: boolean }>(`/api/platform/operators/${confirm.row.id}/active`, { method: "POST", body: JSON.stringify({ active: confirm.active }) });
       setConfirmBusy(false);
       setConfirm(null);
       if (!r.ok) { notify(r.error, "error"); return; }
-      notify(confirm.active ? "Оператора увімкнено" : "Оператора вимкнено", "success");
+      if (r.data.claim_synced === false) {
+        /* Чесно за напрямком (ревʼю с84 р2, L-2): увімкненому прапорець долагодить
+           вхід; вимкненому вхід закрито — прапорець лишиться, але прав не дає. */
+        notify(confirm.active
+          ? "Оператора увімкнено, але прапорець маршрутизації не оновився — вирівняється при його наступному вході"
+          : "Оператора вимкнено (доступу немає), але прапорець маршрутизації не знявся — повторіть вимкнення пізніше; до того людина бачитиме екран «доступ вимкнено»", "warn");
+      } else {
+        notify(confirm.active ? "Оператора увімкнено" : "Оператора вимкнено", "success");
+      }
     } else {
       const r = await api<{ ok: true; temp_password: string }>(`/api/platform/operators/${confirm.row.id}/password`, { method: "POST", body: "{}" });
       setConfirmBusy(false);
@@ -534,7 +569,7 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
           <div className="fld-row">
             <label className="fld">
               <span className="fld-lab">Email <span className="req">*</span></span>
-              <input className="inp" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="name@company.ua" autoComplete="off" />
+              <input className="inp" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="name@company.ua" autoComplete="off" aria-required="true" />
             </label>
             <label className="fld">
               <span className="fld-lab">ПІБ</span>
@@ -547,7 +582,9 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
           </label>
           <div className="pf-hint">Справжня пошта (не службова адреса). Вхід — на /login за email і тимчасовим паролем, який покажеться один раз нижче.</div>
           <div className="pf-actions">
-            <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy}>{busy ? "Створюємо…" : "Створити оператора"}</button>
+            <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy}>
+              {busy ? <><span className="rf-spin" aria-hidden="true" /> Створюємо…</> : "Створити оператора"}
+            </button>
           </div>
         </form>
         {secret && <SecretBox secret={secret.value} label={secret.label} onCopied={(ok) => notify(ok ? "Пароль скопійовано" : "Не вдалося скопіювати — виділіть і скопіюйте вручну", ok ? "success" : "warn")} />}
@@ -564,9 +601,9 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
                   <div className="sub">{r.email} · з {fmtDate(r.created_at)}{r.note ? ` · ${r.note}` : ""}</div>
                 </div>
                 <span className={"badge " + (r.active ? "green" : "gray")}>{r.active ? "активний" : `вимкнено ${fmtDate(r.disabled_at)}`}</span>
-                {r.active && <button type="button" className="btn btn-secondary btn-sm" onClick={() => setConfirm({ kind: "password", row: r })}>Скинути пароль</button>}
+                {r.active && <button type="button" className="btn btn-secondary btn-sm" aria-label={`Скинути пароль — ${r.email}`} onClick={() => setConfirm({ kind: "password", row: r })}>Скинути пароль</button>}
                 {r.id !== meId && (
-                  <button type="button" className={"btn btn-secondary btn-sm" + (r.active ? " qd-act-red" : "")} onClick={() => setConfirm({ kind: "active", row: r, active: !r.active })}>
+                  <button type="button" className={"btn btn-secondary btn-sm" + (r.active ? " qd-act-red" : "")} aria-label={`${r.active ? "Вимкнути" : "Увімкнути"} — ${r.email}`} onClick={() => setConfirm({ kind: "active", row: r, active: !r.active })}>
                     {r.active ? "Вимкнути" : "Увімкнути"}
                   </button>
                 )}
@@ -704,7 +741,7 @@ export default function PlatformConsole({ operator }: { operator: { id: string; 
         </header>
         <div className="pf-content">
           {clinicId ? (
-            <ClinicCard id={clinicId} onBack={() => go("clinics")} notify={notify} />
+            <ClinicCard key={clinicId} id={clinicId} onBack={() => go("clinics")} notify={notify} />
           ) : view === "operators" ? (
             <OperatorsView meId={operator.id} notify={notify} />
           ) : view === "log" ? (

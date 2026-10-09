@@ -19,9 +19,13 @@ import { PLATFORM_APP_METADATA_ON, PLATFORM_CLAIM_VALUE } from "@/lib/platformCl
 
    Хто стереже замість ролі: `CRON_SECRET` у заголовку (той самий секрет, що
    авторизує /api/maintenance/retention і /api/outbox/deliver; порівняння
-   timingSafeEqual, fail-closed без секрету) + ліміт по IP (5 за годину, при
-   відмові лімітера — ВІДМОВА: тут лімітер — другий і останній рубіж). Тіло —
-   email (справжня пошта, не службовий домен radflow.local) і ПІБ.
+   timingSafeEqual, fail-closed без секрету) + ліміт по IP (5 за годину, ДО
+   порівняння секрету; при відмові лімітера — ВІДМОВА). Тіло — email (справжня
+   пошта, не службовий домен radflow.local) і ПІБ.
+   ⚠️ Вікно: поки таблиця порожня, власник CRON_SECRET може викарбувати
+   оператора. Тому bootstrap — одразу після деплою 0206; далі 409 (а 409 на
+   свіжому середовищі — сигнал, що хтось устиг раніше). Два паралельні виклики
+   в це вікно дадуть двох «перших» — обидва з секретом, тобто від власника.
 
    Відповідь — тимчасовий пароль, показаний РІВНО один раз тому, хто викликав
    (власник, зі свого терміналу). У лог сервера і в журнал платформи пароль не
@@ -39,6 +43,10 @@ export async function POST(req: Request) {
   if (!secret) {
     return NextResponse.json({ error: "CRON_SECRET не налаштовано на сервері" }, { status: 500 });
   }
+  /* Ліміт ДО порівняння секрету (ревʼю с84, лінза C, L-3): інакше перебір
+     секрету нічим не тротлиться. Ключ — IP; при відмові лімітера — відмова. */
+  const ok = await rateLimitOk(`platform:bootstrap:${clientIp(req)}`, 5, 3600, "closed");
+  if (!ok) return NextResponse.json({ error: "Забагато запитів. Спробуйте за годину." }, { status: 429 });
   const auth = req.headers.get("authorization") ?? "";
   const expected = `Bearer ${secret}`;
   const a = Buffer.from(auth);
@@ -49,8 +57,6 @@ export async function POST(req: Request) {
   if (!isAdminConfigured()) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері" }, { status: 500 });
   }
-  const ok = await rateLimitOk(`platform:bootstrap:${clientIp(req)}`, 5, 3600, "closed");
-  if (!ok) return NextResponse.json({ error: "Забагато запитів. Спробуйте за годину." }, { status: 429 });
 
   const parsed = await parseBody("api/platform/bootstrap", req, sBootstrap, "Вкажіть коректний email і ПІБ оператора");
   if (!parsed.ok) return parsed.res;
@@ -69,7 +75,10 @@ export async function POST(req: Request) {
   if (cntErr) {
     return NextResponse.json({ error: safeDbError("api/platform/bootstrap.count", cntErr) }, { status: 500 });
   }
-  if ((count ?? 0) > 0) {
+  if (count == null) {
+    return NextResponse.json({ error: "Не вдалося перевірити, чи є оператори (лічильник порожній)" }, { status: 500 });
+  }
+  if (count > 0) {
     return NextResponse.json({ error: "Оператор уже є — bootstrap більше не доступний. Нових операторів створює оператор у консолі." }, { status: 409 });
   }
 
@@ -96,7 +105,7 @@ export async function POST(req: Request) {
     /* Компенсація: акаунт без рядка оператора — сирота (№24 назве його за 15 хв,
        якщо deleteUser не дійде). */
     const { error: dErr } = await admin.auth.admin.deleteUser(id);
-    if (dErr) logError({ event: "platform.bootstrap_compensation_failed", actorId: id, errorCode: dErr.message ?? null });
+    if (dErr) logError({ event: "platform.bootstrap_compensation_failed", entityId: id, errorCode: "deleteUser", message: dErr.message });
     return NextResponse.json({ error: safeDbError("api/platform/bootstrap.insert", iErr) }, { status: 500 });
   }
 

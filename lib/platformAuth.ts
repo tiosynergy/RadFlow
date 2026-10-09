@@ -17,7 +17,13 @@
    для `requireRole`).
 
    `app_metadata.platform = 'operator'` (lib/platformClaim.ts) — лише
-   маршрутизація в middleware; авторизація — тільки рядок. */
+   маршрутизація в middleware; авторизація — тільки рядок.
+
+   ТРИ СТАНИ ЧИТАННЯ РЯДКА (ревʼю с84, лінза B). «Рядка немає» і «не вдалося
+   прочитати» — різні речі: перше — не оператор (403 / геть із контуру), друге —
+   тимчасова відмова (503 / «спробуйте за хвилину»). Поки обидва були одним
+   `null`, збій БД виглядав як втрата прав, а сторінка /platform зі збою
+   редіректила в /queue, звідки middleware за прапорцем вів назад — петля. */
 
 import { NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -26,7 +32,17 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { rateLimitOk } from "@/lib/rateLimit";
 import { logError } from "@/lib/serverLog";
-import type { PlatformAction, PlatformOperatorRow } from "@/lib/platformContract";
+import { isOperatorByClaim } from "@/lib/platformClaim";
+import {
+  LOGIN_BLOCKED_STATUSES,
+  PLATFORM_LOG_DETAIL_KEYS,
+  isClinicStatus,
+  projectLogDetails,
+  type ClinicStatus,
+  type PlatformAction,
+  type PlatformLogItem,
+  type PlatformOperatorRow,
+} from "@/lib/platformContract";
 
 export type PlatformOperator = Pick<PlatformOperatorRow, "id" | "email" | "full_name" | "active">;
 
@@ -42,9 +58,13 @@ const err = (message: string, status: number): { ok: false; res: NextResponse } 
 
 type RateLimitOpt = { key: string; max: number; windowSeconds: number };
 
-/** Рядок оператора за id ПЕРЕВІРЕНОЇ сесії. null — рядка немає або читання впало
-    (fail-closed: помилка читання = «не оператор», слід у лозі). */
-export async function platformOperatorOf(admin: Admin, userId: string): Promise<PlatformOperator | null> {
+/** Результат читання рядка оператора: прочитано (рядок або його немає) чи збій. */
+export type OperatorRead = { ok: true; operator: PlatformOperator | null } | { ok: false };
+
+/** Рядок оператора за id ПЕРЕВІРЕНОЇ сесії. `{ ok: false }` — читання впало
+    (слід у лозі; хто викликав, вирішує сам: гейт — 503, сторінка — екран без
+    редіректу). Рядка немає — `{ ok: true, operator: null }`. */
+export async function platformOperatorOf(admin: Admin, userId: string): Promise<OperatorRead> {
   const { data, error } = await admin
     .from("platform_operators")
     .select("id, email, full_name, active")
@@ -52,9 +72,9 @@ export async function platformOperatorOf(admin: Admin, userId: string): Promise<
     .maybeSingle();
   if (error) {
     logError({ event: "platform.operator_read_failed", actorId: userId, errorCode: error.code ?? null, message: error.message });
-    return null;
+    return { ok: false };
   }
-  return data ? (data as PlatformOperator) : null;
+  return { ok: true, operator: data ? (data as PlatformOperator) : null };
 }
 
 /**
@@ -78,7 +98,13 @@ export async function requirePlatformOperator(
   }
 
   const admin = createAdminClient();
-  const operator = await platformOperatorOf(admin, user.id);
+  const read = await platformOperatorOf(admin, user.id);
+  if (!read.ok) {
+    /* Збій читання — не «немає прав», а «не знаємо» (fail-closed, але чесно:
+       503, щоб консоль не писала людині «недостатньо прав» через хвилинний збій). */
+    return err("Тимчасова помилка перевірки прав. Спробуйте за хвилину.", 503);
+  }
+  const operator = read.operator;
   if (!operator) {
     /* Сесія є, рядка оператора немає — персонал центру або чужий акаунт на
        платформному роуті. Текст 403 загальний: не каже, що такий контур існує
@@ -100,25 +126,81 @@ export async function requirePlatformOperator(
   return { ok: true, admin, user: { id: user.id }, operator };
 }
 
-/** Для сторінки `/platform` (Server Component): сесія + рядок оператора без
-    імпорту service-role у сторінку. `user` null — сесії немає; `operator` null —
-    сесія є, але це не оператор (персонал центру або чужий акаунт). */
-export async function platformSession(): Promise<{ user: { id: string } | null; operator: PlatformOperator | null }> {
-  if (!isAdminConfigured()) return { user: null, operator: null };
+/** Стан сесії для сторінки `/platform` (Server Component) — без імпорту
+    service-role у сторінку. Кожен стан має РІВНО один наслідок на сторінці
+    (tests/authSurface.test.ts, HEAD_PLATFORM):
+      unconfigured — немає service-ключа: екран, не редірект (залогіненого
+                     middleware з /login вів би назад сюди — петля);
+      anonymous    — сесії немає → /login з поверненням;
+      read_failed  — сесія є, рядок не прочитався → екран «спробуйте за хвилину»;
+      stranger     — сесія є, рядка немає: з прапорцем оператора → /api/auth/reset
+                     (вихід; інакше middleware вів би з /queue назад — петля),
+                     без прапорця → /queue (клінічний контур);
+      operator     — рядок є; `active` вирішує консоль чи відмова. */
+export type PlatformSession =
+  | { state: "unconfigured" }
+  | { state: "anonymous" }
+  | { state: "read_failed"; user: { id: string } }
+  | { state: "stranger"; user: { id: string }; claim: boolean }
+  | { state: "operator"; user: { id: string }; operator: PlatformOperator };
+
+export async function platformSession(): Promise<PlatformSession> {
+  if (!isAdminConfigured()) return { state: "unconfigured" };
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return { user: null, operator: null };
-  const operator = await platformOperatorOf(createAdminClient(), user.id);
-  return { user: { id: user.id }, operator };
+  if (!user) return { state: "anonymous" };
+  const read = await platformOperatorOf(createAdminClient(), user.id);
+  if (!read.ok) return { state: "read_failed", user: { id: user.id } };
+  if (!read.operator) return { state: "stranger", user: { id: user.id }, claim: isOperatorByClaim(user) };
+  return { state: "operator", user: { id: user.id }, operator: read.operator };
+}
+
+/* ── Вердикт входу (хто увійшов і чи можна віддати сесію) ──────────────────
+   Спільний для ДВОХ місць, де сесію відкриває НАШ сервер за паролем: `/api/auth/login` і
+   автовхід після `/api/account/set-password` (с82). Статус центру застосовується
+   рівно тут — при відкритті сесії; живі сесії, server actions і глобальні
+   акаунти (clinic_id NULL) не чіпаються (Н-25, рішення власника).
+   ⚠️ ЦЕ М'ЯКИЙ ГЕЙТ (ревʼю с84, лінза C M-1; р2 L-9): сесію відкриває GoTrue, а не
+   ми. Anon-ключ публічний, тож вхід напряму в GoTrue (`/auth/v1/token`) і обмін
+   коду в `/auth/callback` (OAuth / magic link) цей вердикт оминають — RLS статусу
+   центру не знає. Справжнє застосування статусу — у БД (Н-25, рішення власника).
+   Помилка читання НЕ блокує вхід (доступність входу важливіша — той самий вибір,
+   що в лімітера), але ніколи не мовчить (`logError`). */
+export type LoginVerdict =
+  | { kind: "platform"; active: boolean }
+  /** `operatorKnown: false` — рядок оператора НЕ прочитався: людина може бути
+      оператором, тож прапорець маршрутизації за цим вердиктом не чіпають (ревʼю
+      с84, лінза C, L-1: інакше хвилинний збій знімав би прапорець операторові). */
+  | { kind: "clinic"; clinicId: string | null; blocked: ClinicStatus | null; operatorKnown: boolean };
+
+export async function loginVerdict(admin: Admin, uid: string): Promise<LoginVerdict> {
+  const { data: op, error: opErr } = await admin
+    .from("platform_operators").select("id, active").eq("id", uid).maybeSingle();
+  if (opErr) logError({ event: "login.kind_read_failed", actorId: uid, errorCode: opErr.code ?? null, message: opErr.message });
+  if (op) return { kind: "platform", active: !!op.active };
+  const operatorKnown = !opErr;
+
+  const { data: prof, error: pErr } = await admin
+    .from("profiles").select("clinic_id").eq("id", uid).maybeSingle();
+  if (pErr) logError({ event: "login.kind_read_failed", actorId: uid, errorCode: pErr.code ?? null, message: pErr.message });
+  const clinicId = prof?.clinic_id ?? null;
+  if (!clinicId) return { kind: "clinic", clinicId: null, blocked: null, operatorKnown };
+
+  const { data: acc, error: aErr } = await admin
+    .from("platform_accounts").select("status").eq("clinic_id", clinicId).maybeSingle();
+  if (aErr) logError({ event: "login.status_read_failed", actorId: uid, clinicId, errorCode: aErr.code ?? null, message: aErr.message });
+  const blocked = acc && isClinicStatus(acc.status) && LOGIN_BLOCKED_STATUSES.includes(acc.status) ? acc.status : null;
+  return { kind: "clinic", clinicId, blocked, operatorKnown };
 }
 
 /* ── Журнал дій оператора ──────────────────────────────────────────────────
    fail-OPEN, як важливі події центру (рішення власника для 0128): помилка
    журналу НЕ відкочує дію, але ніколи не мовчить — `logError`. ПДн сюди не
    кладуть: `details` проходить CHECK `platform_log_no_pii_chk` у БД, а тут —
-   allowlist ключів на рівні типу (лише те, що перелічено нижче). */
+   allowlist ключів `PLATFORM_LOG_DETAIL_KEYS` (той самий перелік — біла
+   проекція на виході, `hydrateLogRows`). */
 export type PlatformLogDetails = {
   from?: string;
   to?: string;
@@ -141,8 +223,8 @@ export async function platformLog(
   }
 ): Promise<void> {
   const details: { [key: string]: Json | undefined } = {};
-  const d = entry.details ?? {};
-  for (const k of ["from", "to", "reason", "fields", "plan", "paid_until", "bootstrap"] as const) {
+  const d = (entry.details ?? {}) as Record<string, unknown>;
+  for (const k of PLATFORM_LOG_DETAIL_KEYS) {
     if (d[k] !== undefined) details[k] = d[k] as Json;
   }
   const { error } = await admin.from("platform_log").insert({
@@ -162,6 +244,39 @@ export async function platformLog(
       message: `${entry.action}: ${error.message}`,
     });
   }
+}
+
+/** Рядки журналу як їх читають роути (імена операторів журнал не зберігає). */
+export type PlatformLogRaw = Omit<PlatformLogItem, "operator_name" | "target_operator_name" | "details"> & { details: unknown };
+export const PLATFORM_LOG_COLUMNS = "id, occurred_at, operator_id, action, clinic_id, clinic_name, target_operator_id, details";
+
+/** Імена операторів — окремим читанням за id; `details` — лише відомі ключі
+    (біла проекція). Помилка читання імен — `{ ok: false }`, роут віддає 500. */
+export async function hydrateLogRows(
+  admin: Admin,
+  rows: PlatformLogRaw[]
+): Promise<{ ok: true; items: PlatformLogItem[] } | { ok: false; error: { message: string; code?: string } }> {
+  const opIds = [...new Set(rows.flatMap((r) => [r.operator_id, r.target_operator_id]).filter((x): x is string => !!x))];
+  const names = new Map<string, string>();
+  if (opIds.length) {
+    const { data: ops, error } = await admin.from("platform_operators").select("id, full_name, email").in("id", opIds);
+    if (error) return { ok: false, error };
+    for (const o of ops ?? []) names.set(String(o.id).toLowerCase(), o.full_name || o.email);
+  }
+  const nameOf = (id: string | null) => (id ? names.get(String(id).toLowerCase()) ?? null : null);
+  const items: PlatformLogItem[] = rows.map((r) => ({
+    id: r.id,
+    occurred_at: r.occurred_at,
+    operator_id: r.operator_id,
+    operator_name: nameOf(r.operator_id),
+    action: r.action,
+    clinic_id: r.clinic_id,
+    clinic_name: r.clinic_name,
+    target_operator_id: r.target_operator_id,
+    target_operator_name: nameOf(r.target_operator_id),
+    details: projectLogDetails(r.details),
+  }));
+  return { ok: true, items };
 }
 
 /** Тимчасовий пароль оператора — показується РІВНО один раз тому, хто створив

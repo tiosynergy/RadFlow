@@ -25,7 +25,7 @@ export default function SetPasswordPage() {
   /* с82: після успіху роут відкриває сесію (автовхід) і віддає контекст ролі —
      екран каже, хто ввійшов і куди йти, замість «тепер увійдіть ще раз».
      `signedIn=false` (сесію відкрити не вдалося) — чесний фолбек на /login. */
-  const [success, setSuccess] = useState<{ signedIn: boolean; otherSession: boolean; welcome: Welcome } | null>(null);
+  const [success, setSuccess] = useState<{ signedIn: boolean; otherSession: boolean; clinicBlocked: boolean; welcome: Welcome } | null>(null);
   const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
 
   // Беремо одноразовий токен із посилання ?token=… (адмін передає його особисто)
@@ -102,6 +102,8 @@ export default function SetPasswordPage() {
       setSuccess({
         signedIn: data?.signedIn === true,
         otherSession: data?.reason === "other_session",
+        /* 0206: центр призупинено — пароль стоїть, автовходу не було, вхід закрито. */
+        clinicBlocked: data?.clinic_blocked === true,
         welcome: welcomeFor({
           role: typeof data?.role === "string" ? data.role : null,
           fullName: typeof data?.full_name === "string" ? data.full_name : identity?.full_name ?? null,
@@ -155,6 +157,11 @@ export default function SetPasswordPage() {
                 onClick={async () => { setSigningOut(true); try { await signOutAndRedirect(router); } catch { setSigningOut(false); showToast("Не вдалося вийти з іншого акаунта. Відкрийте вхід у приватному вікні."); } }}>
                 {signingOut ? <><span className="spinner" />Виходимо…</> : "Вийти з іншого акаунта та увійти"}
               </button>
+            </>) : success.clinicBlocked ? (<>
+              {/* 0206: статус центру suspended / archived — вхід персоналу закрито
+                  (той самий вердикт, що на /login). Пароль збережено: знадобиться,
+                  коли центр повернуть. Кнопки входу немає — вона дала б 403. */}
+              <div className="sub">Пароль збережено, але доступ вашого центру до RadFlow наразі призупинено, тому увійти не вийде. Зверніться до адміністратора центру або до RadFlow.</div>
             </>) : (<>
               <div className="sub">Тепер увійдіть за своїм логіном і паролем.</div>
               <a className="btn" href="/login">Перейти до входу</a>

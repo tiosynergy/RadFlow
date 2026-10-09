@@ -31,12 +31,13 @@
 //    `latestReprint()` у тестах і стендах бере ОСТАННІЙ файл, де рядок
 //    ПОЧИНАЄТЬСЯ з create-or-replace сторожа.
 //
-// ⚠️ ПОРЯДОК У НАКАТІ: передрук сторожа → пін → ПОВНИЙ сторож ДО DDL (≈9 с;
-//    зеленим, крім названого №13 і рівно шести `missing:` №23) → DDL (три таблиці,
-//    індекси, RLS, revoke, функція) → запити №3/№22/№23/№24 дослівно → ПОВНИЙ
-//    сторож ПІСЛЯ DDL (зелений, крім №13) → леджер. Замки лише на НОВІ обʼєкти
-//    (живих таблиць DDL не торкається; FK на `clinics` і `auth.users` беруть
-//    SHARE ROW EXCLUSIVE на мілісекунди).
+// ⚠️ ПОРЯДОК У НАКАТІ: DDL (три таблиці, індекси, RLS, revoke/grant, функція) →
+//    зріз СТАРОГО №23 мусить назвати РІВНО шість `new:` із заміряними дайджестами →
+//    передрук сторожа → пін → зрізи №3/№22/№23/№24 нового тіла → ПОВНИЙ сторож
+//    (≈9 с; зелений, крім названого №13) → леджер. Чому DDL першим — див. FORWARD.
+//    ⚠️ ЗАМКИ: живих таблиць DDL не змінює, але FK на `clinics` і `auth.users`
+//    тримають SHARE ROW EXCLUSIVE до commit (≈12–15 с разом зі сторожем): записи
+//    в ці таблиці чекають (вхід оновлює last_sign_in_at), читання — ні.
 //
 // ⚠️ ПІСЛЯ `npm run db:gate` ЦЕЙ ГЕНЕРАТОР НЕ ЗАПУСКАТИ: він перезаписує файл
 //    міграції, чий md5 уже в леджері. Без `--force` відмовляється, якщо зміст інший.
@@ -120,7 +121,7 @@ if (SRC.head + SRC.prologue + SRC.body + "$function$;" + SRC.tail !== SRC.raw) {
 
 // ---------------------------------------------------------------------------
 // 2. DDL ПАКЕТА — єдине джерело для файлу міграції, фрагів і дайджестів №23.
-//    Дайджести ЗАМІРЯНО на проді 09.10 (с84, 06:30 UTC) у відкоченій транзакції
+//    Дайджести ЗАМІРЯНО на проді 09.10 (с84, 06:30 і 08:05 UTC) у відкоченій транзакції
 //    саме з цим текстом DDL: сторож після нього назвав РІВНО шість `new:` (нижче)
 //    і нічого більше (№22 — жодного ключа, №3 — RLS увімкнено, ACL функції —
 //    postgres + service_role). Правиш DDL — переміряй і перепиши NEW23.
@@ -130,7 +131,16 @@ const FN = "platform_clinic_stats";
 const FN_REGPROC = "public.platform_clinic_stats()";
 const FN_ACL = "postgres=X/postgres,service_role=X/postgres";
 const STATUSES = ["trial", "active", "suspended", "archived"];
-const PII_KEYS = ["patient_name", "patient_phone", "patient_email", "patient_dob", "name", "phone", "email", "dob", "password", "token", "note", "notes", "studies"];
+/** Ключі, яких у `details` журналу не може бути: канон 0160 (`important_events_no_pii_chk`)
+ *  + `notes` (нотатки оператора — вільний текст) + варіанти пароля (роут операторів
+ *  віддає тимчасовий пароль РІВНО один раз у відповіді й ніде більше). Лише
+ *  верхньорівневі ключі — як і в каноні. */
+const PII_KEYS = [
+  "patient_name", "patient_phone", "patient_email", "patient_dob", "name", "phone", "email", "dob",
+  "contraindications", "note", "notes", "studies", "weight",
+  "refresh_token", "access_token", "id_token", "token", "code", "client_secret", "calendar_id", "google_email", "account_email",
+  "password", "temp_password", "tmp_password", "pass", "secret",
+];
 
 const DDL_TABLES = (ifNotExists) => {
   const ine = ifNotExists ? "if not exists " : "";
@@ -189,6 +199,8 @@ const DDL_TABLES = (ifNotExists) => {
     "alter table public.platform_accounts  enable row level security;",
     "alter table public.platform_log       enable row level security;",
     "revoke all on table public.platform_operators, public.platform_accounts, public.platform_log from public, anon, authenticated;",
+    "-- service_role — ЯВНО, не з дефолтного ACL (пастка 0122: дефолт — не контракт)",
+    "grant select, insert, update, delete on table public.platform_operators, public.platform_accounts, public.platform_log to service_role;",
   ].join("\n");
 };
 
@@ -234,7 +246,7 @@ const FN_BODY_MD5 = (() => {
 /** Дайджести №23 для нових обʼєктів — ЗАМІРЯНО на проді (див. шапку розділу 2). */
 const NEW23 = [
   ["k:platform_accounts", "8:e27d5034f4e4"],
-  ["k:platform_log", "8:3c2b9b4b1a90"],
+  ["k:platform_log", "8:7040d6ef2253"],
   ["k:platform_operators", "7:609ad073e819"],
   ["t:platform_accounts", "11:d09157fb92f7"],
   ["t:platform_log", "8:0a75467baf7d"],
@@ -594,6 +606,11 @@ const OBJECTS_ASSERT = (tag) => [
   "        left join pg_roles r on r.oid = a.grantee",
   `       where c.relnamespace = 'public'::regnamespace and c.relname in (${TABLES.map(lit).join(", ")})`,
   "         and coalesce(r.rolname::text, 'PUBLIC') in ('anon', 'authenticated', 'PUBLIC')",
+  "      union all",
+  "      -- service_role мусить МАТИ всі чотири права явно (гейт і роути ходять ним)",
+  "      select 'no_service_role:' || t || ':' || p",
+  `        from unnest(${sqlArr(TABLES)}) t cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]) p`,
+  "       where to_regclass('public.' || t) is not null and not has_table_privilege('service_role', 'public.' || t, p)",
   "    ) x;",
   "  if v_bad is not null then",
   `    raise exception '${tag}: обʼєкти пакета не ті: %', v_bad;`,
@@ -680,29 +697,6 @@ const SENTINEL = (tag, what) => [
   `    raise exception '${tag}: сторож ${what} червоний: % — %', v_failed, v_res->'failed';`,
   "  end if;",
 ].join("\n");
-/** ПОВНИЙ сторож ПІСЛЯ передруку, але ДО DDL: №23 мусить назвати РІВНО шість `new:`. */
-const SENTINEL_PRE_DDL = (tag) => [
-  "  -- ── ПОВНИЙ сторож ДО DDL (≈9 с; замків на таблиці ще немає): зелений, крім",
-  "  --    №13 і №23, а №23 називає РІВНО шість нових ключів — доказ, що список",
-  "  --    №23 у новому тілі живий і що DDL нижче дасть саме ці дайджести ──",
-  SENTINEL_CALL,
-  `  if (v_res->>'checked')::int <> ${CHECKED} then`,
-  `    raise exception '${tag}: сторож перевірив % замість ${CHECKED}', v_res->>'checked';`,
-  "  end if;",
-  "  select array_agg(e.value->>'check' order by e.value->>'check') into v_failed",
-  "    from jsonb_array_elements(v_res->'failed') e",
-  `   where e.value->>'check' not in ${KNOWN_RED_SQL} and e.value->>'check' <> 'schema_digest';`,
-  "  if v_failed is not null then",
-  `    raise exception '${tag}: до DDL сторож червоний не від пакета: % — %', v_failed, v_res->'failed';`,
-  "  end if;",
-  "  select array_agg(o.value order by o.value collate \"C\") into v_off23",
-  "    from jsonb_array_elements(v_res->'failed') e,",
-  "         jsonb_array_elements_text(e.value->'offenders') o",
-  "   where e.value->>'check' = 'schema_digest';",
-  `  if v_off23 is distinct from ${sqlArr(NEW23.map(([k]) => `missing:${k}`))} then`,
-  `    raise exception '${tag}: №23 до DDL мусить назвати рівно шість missing:, а назвав % — список №23 не живий?', v_off23;`,
-  "  end if;",
-].join("\n");
 /** ПОВНИЙ сторож ПІСЛЯ накату, але ДО db:gate (фальсифікація): №7 `ledger_md5`
  *  законно червоний з offender-ом РІВНО самої 0206 (md5 ще не проштамповано). */
 const SENTINEL_PRE_GATE = (tag, what) => [
@@ -746,7 +740,7 @@ const DECL = (tag, fromXs, toXs, lblXs, extra = []) => [
   "declare",
   "  v_def text; v_body text; v_src text; v_head text; v_new text;",
   "  v_hits int; v_rows int; v_res jsonb; v_pin_db text; v_bad text[]; v_tmp text[];",
-  "  v_failed text[]; v_acl text; v_off23 text[];",
+  "  v_failed text[]; v_acl text;",
   ...extra,
   `  v_from constant text[] := ${arr(fromXs)};`,
   `  v_to   constant text[] := ${arr(toXs)};`,
@@ -767,6 +761,69 @@ const LEDGER_INSERT = (tag) => [
   "  end if;",
 ].join("\n");
 
+/** Проба клієнтських ролей (ревʼю с84: лінза C — поведінково; р2 M-1 — не вакуумно).
+ *  Від імені anon і authenticated: читання кожної з трьох таблиць і виклик
+ *  `platform_clinic_stats()` мусять дати 42501 САМЕ на цьому обʼєкті:
+ *   • після `set local role` — перевірка, що роль справді перемкнулась (інакше
+ *     відмова SET ROLE теж 42501 і ковталась би);
+ *   • текст відмови мусить назвати обʼєкт: функція INVOKER, і з EXECUTE для клієнта
+ *     вона впала б 42501 на ЧУЖІЙ таблиці (integration_keys) — це не та відмова;
+ *   • успішний select (навіть порожній: грант без політик = нуль рядків) — провал.
+ *  Роль повертає відкат субтранзакції перехопленої помилки (перевіряється в кінці).
+ *  Усі провали несуть мітку ACL_PROBE — за нею falsify E/F впізнають свій провал. */
+const ROLE_PROBE = (tag) => [
+  "  foreach v_role in array array['anon', 'authenticated'] loop",
+  "    foreach v_tbl in array array['platform_operators', 'platform_accounts', 'platform_log'] loop",
+  "      begin",
+  "        execute format('set local role %I', v_role);",
+  "        if current_user <> v_role then",
+  `          raise exception '${tag}: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;`,
+  "        end if;",
+  "        execute format('select 1 from public.%I limit 1', v_tbl);",
+  `        raise exception '${tag}: ACL_PROBE роль % читає %', v_role, v_tbl;`,
+  "      exception when insufficient_privilege then",
+  "        get stacked diagnostics v_msg = message_text;",
+  "        if position(v_tbl in v_msg) = 0 then",
+  `          raise exception '${tag}: ACL_PROBE % від % — не та відмова: %', v_tbl, v_role, v_msg;`,
+  "        end if;",
+  "      end;",
+  "    end loop;",
+  "    begin",
+  "      execute format('set local role %I', v_role);",
+  "      if current_user <> v_role then",
+  `        raise exception '${tag}: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;`,
+  "      end if;",
+  "      perform public.platform_clinic_stats();",
+  `      raise exception '${tag}: ACL_PROBE роль % викликає platform_clinic_stats()', v_role;`,
+  "    exception when insufficient_privilege then",
+  "      get stacked diagnostics v_msg = message_text;",
+  "      if position('platform_clinic_stats' in v_msg) = 0 then",
+  `        raise exception '${tag}: ACL_PROBE platform_clinic_stats() від % — не та відмова: %', v_role, v_msg;`,
+  "      end if;",
+  "    end;",
+  "  end loop;",
+  "  if current_user <> 'postgres' then",
+  `    raise exception '${tag}: ACL_PROBE після проб роль не повернулась до postgres (%)', current_user;`,
+  "  end if;",
+].join("\n");
+
+/** Червона базова лінія проби ролей (falsify): видати грант → проба МУСИТЬ упасти
+ *  з міткою ACL_PROBE і назвати роль та обʼєкт; блок перехоплює провал, і відкат
+ *  субтранзакції забирає грант. Не впала — провал falsify. */
+const ROLE_PROBE_RED = (step, grantSql, needles) => [
+  `  -- ── ${step}. червона базова лінія проби ролей: ${grantSql} ──`,
+  "  begin",
+  `    ${grantSql}`,
+  ROLE_PROBE(`falsify-${step}`).split("\n").map((l) => "  " + l).join("\n"),
+  `    raise exception 'falsify: ${step} — проба ролей НЕ почервоніла з грантом';`,
+  "  exception when others then",
+  "    get stacked diagnostics v_msg = message_text;",
+  `    if position('ACL_PROBE' in v_msg) = 0${needles.map((n) => ` or position('${n}' in v_msg) = 0`).join("")} then`,
+  `      raise exception 'falsify: ${step} — не той провал проби ролей: %', v_msg;`,
+  "    end if;",
+  "  end;",
+].join("\n");
+
 /** Поведінкова проба (усе відкочується ззовні): оператор без профілю — не сирота;
  *  статус поза CHECK відмовляє; ПДн у details журналу відмовляє; функція статистики
  *  віддає рядок на кожен центр. */
@@ -780,11 +837,21 @@ const BEHAVIOR_PROBE = (tag) => [
   "    (v_u1, 'op1.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',",
   "     jsonb_build_object('managed', 'true', 'platform', 'operator'), now() - interval '1 hour'),",
   "    (v_u2, 'op2.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',",
-  "     jsonb_build_object('managed', 'true'), now() - interval '1 hour'),",
+  "     jsonb_build_object('managed', 'true', 'platform', 'operator'), now() - interval '1 hour'),",
   "    (v_u3, 'op3.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',",
-  "     jsonb_build_object('managed', 'true'), now());",
+  "     jsonb_build_object('managed', 'true', 'platform', 'operator'), now());",
   "  if exists (select 1 from public.profiles where id in (v_u1, v_u2, v_u3)) then",
   `    raise exception '${tag}: managed-акаунт отримав профіль від тригера';`,
+  "  end if;",
+  "  -- Червона базова лінія №24 (ревʼю с84 р2, L-7): метадані двох старих акаунтів",
+  "  -- ОДНАКОВІ, тож різниця нижче — лише рядок оператора. До нього №24 мусить",
+  "  -- назвати ОБОХ (свіжий v_u3 — ні: вікно 15 хв).",
+  Q24,
+  "  if (select array_agg(x order by x collate \"C\") from unnest(v_tmp) x) is distinct from",
+  "     (select array_agg(x order by x collate \"C\") from unnest(array[",
+  "        v_u1::text || '@' || to_char((now() - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD'),",
+  "        v_u2::text || '@' || to_char((now() - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD')]) x) then",
+  `    raise exception '${tag}: базова лінія №24 — мусив назвати обидва старі акаунти без рядка, а назвав %', coalesce(array_length(v_tmp, 1), 0);`,
   "  end if;",
   "  insert into public.platform_operators (id, email, full_name, active)",
   "    values (v_u1, 'op1.' || v_sfx || '@radflow.test', 'Проба Оператор', false);",
@@ -810,50 +877,69 @@ const BEHAVIOR_PROBE = (tag) => [
   `    raise exception '${tag}: CHECK форми action пропустив ''noDot''';`,
   "  exception when check_violation then null;",
   "  end;",
-  "  -- Штатний запис: статус, журнал, функція статистики",
+  ROLE_PROBE(tag),
+  "  -- Штатний запис — на ВЛАСНОМУ пробному центрі (не на живому: після першої",
+  "  -- реальної зміни статусу PK platform_accounts зробив би пробу вічно червоною)",
+  "  insert into public.clinics (name) values ('Проба 0206 ' || v_sfx) returning id into v_c;",
   "  insert into public.platform_accounts (clinic_id, status, status_reason, status_changed_at, status_changed_by, plan, paid_until)",
-  "    select id, 'suspended', 'проба', now(), v_u1, 'проба', current_date from public.clinics order by created_at limit 1;",
+  "    values (v_c, 'suspended', 'проба ' || v_sfx, now(), v_u1, 'проба', current_date);",
   "  insert into public.platform_log (operator_id, action, clinic_id, clinic_name, details)",
-  "    select v_u1, 'clinic.status_changed', id, name, jsonb_build_object('from', 'trial', 'to', 'suspended') from public.clinics order by created_at limit 1;",
+  "    values (v_u1, 'clinic.status_changed', v_c, 'Проба 0206 ' || v_sfx, jsonb_build_object('from', 'trial', 'to', 'suspended', 'reason', v_sfx));",
   "  if (select count(*) from public.platform_clinic_stats()) <> (select count(*) from public.clinics)",
-  "     or exists (select 1 from public.platform_clinic_stats() where staff_n is null or rooms_n is null or entries_total is null) then",
-  `    raise exception '${tag}: platform_clinic_stats() — не по рядку на центр або NULL у лічильниках';`,
+  "     or exists (select 1 from public.platform_clinic_stats() where staff_n is null or rooms_n is null or entries_total is null)",
+  "     or (select rooms_n from public.platform_clinic_stats() where clinic_id = v_c) <> 0 then",
+  `    raise exception '${tag}: platform_clinic_stats() — не по рядку на центр, NULL у лічильниках або пробний центр не порожній';`,
   "  end if;",
   "  -- Каскад: видалення оператора лишає журнал (operator_id → NULL), не ламає облік",
   "  delete from public.platform_operators where id = v_u1;",
-  "  if (select count(*) from public.platform_log where action = 'clinic.status_changed' and operator_id is null) <> 1",
-  "     or (select status_changed_by from public.platform_accounts where status = 'suspended' and status_reason = 'проба') is not null then",
+  "  if (select count(*) from public.platform_log where clinic_id = v_c and operator_id is null and details->>'reason' = v_sfx) <> 1",
+  "     or (select status_changed_by from public.platform_accounts where clinic_id = v_c) is not null then",
   `    raise exception '${tag}: on delete set null на operator_id / status_changed_by не спрацював';`,
   "  end if;",
+  "  -- Каскад центру: видалення центру знімає облік, а журнал лишається з clinic_id NULL і назвою-знімком",
+  "  delete from public.clinics where id = v_c;",
+  "  if exists (select 1 from public.platform_accounts where clinic_id = v_c)",
+  "     or (select count(*) from public.platform_log where clinic_id is null and clinic_name = 'Проба 0206 ' || v_sfx) <> 1 then",
+  `    raise exception '${tag}: каскад видалення центру (accounts cascade, log set null) не спрацював';`,
+  "  end if;",
 ].join("\n");
-const PROBE_DECL = ["  v_u1 uuid; v_u2 uuid; v_u3 uuid; v_sfx text;"];
+const PROBE_DECL = ["  v_u1 uuid; v_u2 uuid; v_u3 uuid; v_sfx text; v_c uuid; v_role text; v_tbl text; v_msg text;"];
 
-/** Тіло накату — спільне для apply і dryrun. */
+/** Тіло накату — спільне для apply і dryrun.
+ *  ⚠️ ПОРЯДОК (ревʼю с84, лінза A, High): DDL ПЕРЕД передруком. Нове тіло №24
+ *  читає `platform_operators`; передрук до DDL дав би в обгортці 0174 offender
+ *  `raised:42P01` і червоний сентинел — накат падав би ЗАВЖДИ. Тому: DDL →
+ *  зріз СТАРОГО №23 (0205) мусить назвати РІВНО шість `new:` із заміряними
+ *  дайджестами (доказ, що живий DDL дає саме їх) → передрук → пін → зрізи
+ *  нового тіла → ПОВНИЙ сторож (зелений, крім №13) → леджер.
+ *  Ціна: FK на `clinics` і `auth.users` тримають SHARE ROW EXCLUSIVE до commit —
+ *  записи в ці дві таблиці (вхід оновлює last_sign_in_at, реєстрація) чекають
+ *  ≈12–15 с (dryrun довше: + проба); читання не блокуються. Накат — у тиху годину. */
 const FORWARD = (tag) => [
   PRE(tag),
   LEDGER_GUARDS(tag),
   readGuard(tag, PRE_MD5, PRE_LEN, PRE_PIN, "0205"),
   ABSENT(tag),
   "",
-  "  -- ── 1. Передрук сторожа: шість ключів №23, умова №24, два абзаци ──────────",
-  substitute(tag, "v_from", "v_to", "v_lbl", NEW_MD5, NEW_LEN, "файл 0206"),
-  "",
-  pinBlock(tag, PIN),
-  "",
-  SENTINEL_PRE_DDL(tag),
-  "",
-  "  -- ── 2. DDL пакета: три таблиці, індекси, RLS, revoke, функція статистики ──",
+  "  -- ── 1. DDL пакета: три таблиці, індекси, RLS, revoke/grant, функція статистики ──",
   indent(DDL_TABLES(false)),
   fnExec("$fxa$", FN_STMT),
   indent(FN_ACL_DDL),
   OBJECTS_ASSERT(tag),
   "",
-  Q_ASSERT(tag, "№3", Q3, "після DDL"),
-  Q_ASSERT(tag, "№22", Q22, "після DDL"),
-  Q_ASSERT(tag, "№23", Q23, "після DDL"),
-  Q_ASSERT(tag, "№24", Q24, "після DDL"),
+  Q_EXPECT_RED(tag, "№23 (список 0205)", Q23_OLD, sqlArr(NEW23_OFFENDERS), "після DDL, до передруку — старий список мусить назвати РІВНО шість new: із заміряними дайджестами"),
   "",
-  SENTINEL(tag, "після DDL"),
+  "  -- ── 2. Передрук сторожа: шість ключів №23, умова №24, два абзаци ──────────",
+  substitute(tag, "v_from", "v_to", "v_lbl", NEW_MD5, NEW_LEN, "файл 0206"),
+  "",
+  pinBlock(tag, PIN),
+  "",
+  Q_ASSERT(tag, "№3", Q3, "після передруку"),
+  Q_ASSERT(tag, "№22", Q22, "після передруку"),
+  Q_ASSERT(tag, "№23", Q23, "після передруку"),
+  Q_ASSERT(tag, "№24", Q24, "після передруку"),
+  "",
+  SENTINEL(tag, "після DDL і передруку"),
   "",
   BEHAVIOR_PROBE(tag),
   "",
@@ -894,10 +980,14 @@ const RED_WINDOW = [
 
 const APPLY = [
   "-- 0206 APPLY — ЗГЕНЕРОВАНО `node scripts/build-0206-reprint.mjs`. Одним запитом,",
-  "-- ОДНА транзакція: передрук сторожа (№23 ×6, №24, два абзаци) → пін → ПОВНИЙ",
-  "-- сторож ДО DDL (№23 називає рівно шість missing:) → DDL (три таблиці, RLS,",
-  "-- revoke, функція) → запити №3/№22/№23/№24 дослівно → ПОВНИЙ сторож → леджер.",
-  "-- Поведінкової проби тут НЕМАЄ.",
+  "-- ОДНА транзакція: DDL (три таблиці, RLS, revoke/grant, функція) → зріз старого №23",
+  "-- називає рівно шість new: із заміряними дайджестами → передрук сторожа (№23 ×6,",
+  "-- №24, два абзаци) → пін → зрізи №3/№22/№23/№24 → ПОВНИЙ сторож → леджер.",
+  "-- Поведінкової проби тут НЕМАЄ. FK на clinics/auth.users тримають SHARE ROW",
+  "-- EXCLUSIVE до commit (≈12–15 с): записи в ці таблиці чекають, читання — ні.",
+  "-- ⚠️ З обгорткою с79 (execute content усередині зовнішнього DO-блоку) рядок",
+  "--    set statement_timeout нижче ІНЕРТНИЙ (канон 0192) — слати його ОКРЕМИМ",
+  "--    стейтментом ПЕРЕД обгорткою.",
   "-- ⚠️ ПОВЕДІНКОВА ПРОБА В APPLY ВИМКНЕНА СВІДОМО: ця транзакція КОМІТИТЬСЯ, і",
   "--    пробні рядки auth.users / platform_* лишились би в проді. Поведінку доводять",
   "--    dryrun (той самий текст + проба + raise = відкат) і falsify.",
@@ -922,13 +1012,15 @@ const APPLY = [
 const DRYRUN = [
   "-- 0206 DRYRUN — ЗГЕНЕРОВАНО `node scripts/build-0206-reprint.mjs`. Те саме, що apply,",
   "-- плюс поведінкова проба (оператор без профілю не сирота для №24; CHECK статусу,",
-  "-- ПДн і форми дії; функція статистики; каскади) і `raise` у кінці — усе",
-  "-- відкочується. Очікуваний текст винятку починається з `DRYRUN_0206_ROLLBACK`.",
-  "-- Будь-який інший текст — справжня відмова (передумова, якір, md5, сторож, DDL).",
+  "-- ПДн і форми дії; функція статистики; каскади — на СВОЄМУ пробному центрі) і",
+  "-- `raise` у кінці — усе відкочується. Очікуваний текст винятку починається з",
+  "-- `DRYRUN_0206_ROLLBACK`. Будь-який інший — справжня відмова (передумова, якір,",
+  "-- md5, сторож, DDL). ⚠️ З обгорткою с79 set statement_timeout слати окремим",
+  "-- стейтментом ПЕРЕД обгорткою (усередині `execute` він інертний, канон 0192).",
   DECL("dryrun", ...FWD, PROBE_DECL),
   FORWARD("dryrun"),
   "",
-  "  raise exception 'DRYRUN_0206_ROLLBACK guard=% len=% pin=% tables=% fn_acl=% probes=24,chk,pii,action,stats,cascade ledger_last=%',",
+  "  raise exception 'DRYRUN_0206_ROLLBACK guard=% len=% pin=% tables=% fn_acl=% probes=24,chk,pii,action,acl,stats,cascade ledger_last=%',",
   "    md5(v_src), length(v_src), v_pin_db,",
   `    (select count(*) from pg_class c where c.relnamespace = 'public'::regnamespace and c.relname in (${TABLES.map(lit).join(", ")}) and c.relrowsecurity),`,
   `    (select array_to_string(array(select t from unnest(f.proacl::text[]) t order by t collate "C"), ',') from pg_proc f where f.oid = to_regprocedure('${FN_REGPROC}')),`,
@@ -943,6 +1035,10 @@ const ROLLBACK = [
   "-- викидаються мовчки; спершу вивантажити і спорожнити руками за явним списком),",
   "-- повертає тіло сторожа до 0205 (ті самі якорі назад), самопін 0205, знімає рядок",
   "-- леджера. ОДНА транзакція.",
+  "-- ⚠️ АКАУНТИ ОПЕРАТОРІВ В auth.users: після відкату старе тіло №24 назве кожен",
+  "--    акаунт без профілю, старший за 15 хв, сиротою — і фінальний сторож тут",
+  "--    ВІДМОВИТЬ (fail-loud). Перед відкатом видалити auth-акаунти операторів за",
+  "--    явним списком id (auth.admin.deleteUser) або прийняти червоний №24 свідомо.",
   DECL("back", ...BWD),
   PRE("back"),
   `  if not exists (select 1 from public.migration_ledger where name = '${DST_NAME}') then`,
@@ -954,6 +1050,18 @@ const ROLLBACK = [
   "      (select max(name) from public.migration_ledger);",
   "  end if;",
   readGuard("back", NEW_MD5, NEW_LEN, PIN, "0206"),
+  "",
+  "  -- ── 0. Передумова: жодного auth-акаунта оператора (інакше старе тіло №24 назве",
+  "  --    його сиротою і фінальний сторож відмовить — краще сказати це ТУТ, імʼям кроку).",
+  "  --    Шукаємо за МЕТАДАНИМИ, а не за рядком (ревʼю с84 р2, L-6): FK з каскадом",
+  "  --    робить «рядок є» рівним «таблиця не порожня» (крок 1), а таблицю могли",
+  "  --    спорожнити руками — акаунти тоді лишились би. Роути ставлять",
+  "  --    user_metadata.platform='operator' кожному оператору (і вимкненому теж). ──",
+  "  if exists (select 1 from auth.users u",
+  "              where u.raw_user_meta_data->>'platform' = 'operator'",
+  "                 or u.raw_app_meta_data->>'platform' = 'operator') then",
+  "    raise exception 'back: в auth.users лишаються акаунти операторів (метадані platform) — спершу видалити їх за явним списком id (або прийняти червоний №24)';",
+  "  end if;",
   "",
   "  -- ── 1. Обʼєкти пакета: лише порожні (дані не викидаємо мовчки) ──",
   ...TABLES.map((t) => [
@@ -1003,7 +1111,13 @@ const FALSIFY = [
   "--   B. grant select на platform_accounts для authenticated → №22 мусить назвати РІВНО",
   "--      new:t:platform_accounts:authenticated->SELECT; revoke — зелений;",
   "--   C. колонка додана в platform_log → №23 мусить назвати changed:t:platform_log; drop — зелений;",
-  "--   D. поведінка: оператор без профілю не сирота (№24), CHECK-и, функція, каскади.",
+  "--   D. поведінка: оператор без профілю не сирота (№24, з червоною базовою лінією),",
+  "--      CHECK-и, проба ролей, функція, каскади;",
+  "--   E. grant select на platform_operators для anon → проба ролей мусить ПОЧЕРВОНІТИ",
+  "--      («роль anon читає platform_operators»); грант відкочується разом із блоком;",
+  "--   F. grant execute на platform_clinic_stats() для authenticated → проба ролей мусить",
+  "--      почервоніти: функція INVOKER і впаде на ЧУЖІЙ таблиці (integration_keys) —",
+  "--      саме цю «не ту відмову» проба й мусить відрізнити від відмови на функції.",
   "-- Очікуваний текст винятку починається з `FALSIFY_0206 verdict=PASS`.",
   "set statement_timeout = '5min';",
   "do $falsify$",
@@ -1042,7 +1156,12 @@ const FALSIFY = [
   "  -- ── D. поведінка ──",
   BEHAVIOR_PROBE("falsify"),
   "",
-  "  raise exception 'FALSIFY_0206 verdict=PASS probes=A,B,C,D guard=%', md5(v_src);",
+  ROLE_PROBE_RED("E", "grant select on table public.platform_operators to anon;", ["anon", "platform_operators"]),
+  ROLE_PROBE_RED("F", `grant execute on function ${FN_REGPROC} to authenticated;`, ["authenticated", "platform_clinic_stats"]),
+  "  -- після E і F (гранти відкотились із блоками) проба знову зелена",
+  ROLE_PROBE("falsify-після-EF"),
+  "",
+  "  raise exception 'FALSIFY_0206 verdict=PASS probes=A,B,C,D,E,F guard=%', md5(v_src);",
   "end",
   "$falsify$;",
 ].join("\n");
@@ -1172,6 +1291,8 @@ const MIG_HEAD = [
   "--   1. `node scripts/build-0206-reprint.mjs` → цей файл + `scripts/frag/0206_*.sql`.",
   "--   2. Тимчасова гілка на GitHub ЛИШЕ з фрагами → `net.http_get` → sha256 =",
   "--      контейнер → `scripts/frag/0206_dryrun.sql` (виняток `DRYRUN_0206_ROLLBACK …`).",
+  "--      ⚠️ `set statement_timeout = '5min'` — ОКРЕМИМ стейтментом перед обгорткою",
+  "--      с79 (execute content усередині DO-блоку: всередині execute він інертний, 0192).",
   "--   3. `scripts/frag/0206_apply.sql` (commit) → контрольне читання.",
   "--   4. `scripts/frag/0206_falsify.sql` (виняток `FALSIFY_0206 verdict=PASS …`).",
   "--   5. `supabase/smoke/0206_platform_operators_smoke.sql` → `SMOKE_OK`.",
@@ -1223,7 +1344,9 @@ const MIG_TAIL = [
   "--  1. База: `scripts/frag/0206_rollback.sql` — знімає функцію і три таблиці (лише",
   `--     ПОРОЖНІ), тіло сторожа 0205 (${PRE_MD5} / ${PRE_LEN}), самопін 0205,`,
   "--     рядок леджера. Якщо в таблицях уже є рядки — спершу вивантажити і",
-  "--     спорожнити за явним списком id. Перевіряти ОКРЕМИМ запитом після commit.",
+  "--     спорожнити за явним списком id; auth-акаунти операторів видалити за явним",
+  "--     списком (інакше старе тіло №24 назве їх сиротами — відкат відмовить).",
+  "--     Перевіряти ОКРЕМИМ запитом після commit.",
   "--  2. Git — ОДНИМ кроком: видалити цей файл, `scripts/frag/0206_*.sql`,",
   "--     `scripts/build-0206-reprint.mjs`, `supabase/smoke/0206_platform_operators_smoke.sql`,",
   "--     `tests/platformOperators0206.test.ts`, контур `app/platform`, `app/api/platform`,",

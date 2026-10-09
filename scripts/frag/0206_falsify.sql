@@ -6,13 +6,19 @@
 --   B. grant select на platform_accounts для authenticated → №22 мусить назвати РІВНО
 --      new:t:platform_accounts:authenticated->SELECT; revoke — зелений;
 --   C. колонка додана в platform_log → №23 мусить назвати changed:t:platform_log; drop — зелений;
---   D. поведінка: оператор без профілю не сирота (№24), CHECK-и, функція, каскади.
+--   D. поведінка: оператор без профілю не сирота (№24, з червоною базовою лінією),
+--      CHECK-и, проба ролей, функція, каскади;
+--   E. grant select на platform_operators для anon → проба ролей мусить ПОЧЕРВОНІТИ
+--      («роль anon читає platform_operators»); грант відкочується разом із блоком;
+--   F. grant execute на platform_clinic_stats() для authenticated → проба ролей мусить
+--      почервоніти: функція INVOKER і впаде на ЧУЖІЙ таблиці (integration_keys) —
+--      саме цю «не ту відмову» проба й мусить відрізнити від відмови на функції.
 -- Очікуваний текст винятку починається з `FALSIFY_0206 verdict=PASS`.
 set statement_timeout = '5min';
 do $falsify$
 declare
   v_tmp text[]; v_bad text[]; v_acl text; v_res jsonb; v_failed text[]; v_src text; v_def text; v_body text; v_head text;
-  v_u1 uuid; v_u2 uuid; v_u3 uuid; v_sfx text;
+  v_u1 uuid; v_u2 uuid; v_u3 uuid; v_sfx text; v_c uuid; v_role text; v_tbl text; v_msg text;
 begin
   perform set_config('lock_timeout', '5s', true);
   -- Шлях фіксуємо явно: інакше читання pg_proc залежало б від налаштування
@@ -32,12 +38,12 @@ begin
     raise exception 'falsify: invariants_check не знайдено';
   end if;
   v_src := replace(v_body, chr(13), '');
-  if md5(v_src) is distinct from '51abb8c19bc86645d6b40e31afcdccd4' or length(v_src) <> 181235 then
+  if md5(v_src) is distinct from '51b87021f7306ff1ef2a864bc1d8d74c' or length(v_src) <> 181235 then
     raise exception 'falsify: у проді не 0206 (% / %) — правка наосліп заборонена', md5(v_src), length(v_src);
   end if;
   v_head := substr(v_def, 1, position('AS $function$' in v_def) + 12);
   if obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
-     is distinct from 'guard_body_md5=51abb8c19bc86645d6b40e31afcdccd4;len=181235' then
+     is distinct from 'guard_body_md5=51b87021f7306ff1ef2a864bc1d8d74c;len=181235' then
     raise exception 'falsify: самопін % не збігається з тілом 0206 — спершу розібратись',
       coalesce(obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc'), '(NULL)');
   end if;
@@ -475,7 +481,7 @@ begin
       ('k:migration_ledger','1:5c36215da16a'),
       ('k:patient_cases','4:882687b5af46'),
       ('k:platform_accounts','8:e27d5034f4e4'),
-      ('k:platform_log','8:3c2b9b4b1a90'),
+      ('k:platform_log','8:7040d6ef2253'),
       ('k:platform_operators','7:609ad073e819'),
       ('k:profiles','5:badfe89d1681'),
       ('k:queue_delay_events','5:4491f3b0db39'),
@@ -657,7 +663,7 @@ begin
       ('k:migration_ledger','1:5c36215da16a'),
       ('k:patient_cases','4:882687b5af46'),
       ('k:platform_accounts','8:e27d5034f4e4'),
-      ('k:platform_log','8:3c2b9b4b1a90'),
+      ('k:platform_log','8:7040d6ef2253'),
       ('k:platform_operators','7:609ad073e819'),
       ('k:profiles','5:badfe89d1681'),
       ('k:queue_delay_events','5:4491f3b0db39'),
@@ -747,11 +753,27 @@ begin
     (v_u1, 'op1.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',
      jsonb_build_object('managed', 'true', 'platform', 'operator'), now() - interval '1 hour'),
     (v_u2, 'op2.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',
-     jsonb_build_object('managed', 'true'), now() - interval '1 hour'),
+     jsonb_build_object('managed', 'true', 'platform', 'operator'), now() - interval '1 hour'),
     (v_u3, 'op3.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',
-     jsonb_build_object('managed', 'true'), now());
+     jsonb_build_object('managed', 'true', 'platform', 'operator'), now());
   if exists (select 1 from public.profiles where id in (v_u1, v_u2, v_u3)) then
     raise exception 'falsify: managed-акаунт отримав профіль від тригера';
+  end if;
+  -- Червона базова лінія №24 (ревʼю с84 р2, L-7): метадані двох старих акаунтів
+  -- ОДНАКОВІ, тож різниця нижче — лише рядок оператора. До нього №24 мусить
+  -- назвати ОБОХ (свіжий v_u3 — ні: вікно 15 хв).
+  select array_agg(u.id::text || '@' || to_char(u.created_at at time zone 'UTC', 'YYYY-MM-DD')
+                   order by u.id::text) into v_tmp
+    from auth.users u
+   where not exists (select 1 from public.profiles p where p.id = u.id)
+     and not exists (select 1 from public.platform_operators o where o.id = u.id)
+     and u.created_at < now() - interval '15 minutes';
+
+  if (select array_agg(x order by x collate "C") from unnest(v_tmp) x) is distinct from
+     (select array_agg(x order by x collate "C") from unnest(array[
+        v_u1::text || '@' || to_char((now() - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD'),
+        v_u2::text || '@' || to_char((now() - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD')]) x) then
+    raise exception 'falsify: базова лінія №24 — мусив назвати обидва старі акаунти без рядка, а назвав %', coalesce(array_length(v_tmp, 1), 0);
   end if;
   insert into public.platform_operators (id, email, full_name, active)
     values (v_u1, 'op1.' || v_sfx || '@radflow.test', 'Проба Оператор', false);
@@ -783,22 +805,185 @@ begin
     raise exception 'falsify: CHECK форми action пропустив ''noDot''';
   exception when check_violation then null;
   end;
-  -- Штатний запис: статус, журнал, функція статистики
+  foreach v_role in array array['anon', 'authenticated'] loop
+    foreach v_tbl in array array['platform_operators', 'platform_accounts', 'platform_log'] loop
+      begin
+        execute format('set local role %I', v_role);
+        if current_user <> v_role then
+          raise exception 'falsify: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+        end if;
+        execute format('select 1 from public.%I limit 1', v_tbl);
+        raise exception 'falsify: ACL_PROBE роль % читає %', v_role, v_tbl;
+      exception when insufficient_privilege then
+        get stacked diagnostics v_msg = message_text;
+        if position(v_tbl in v_msg) = 0 then
+          raise exception 'falsify: ACL_PROBE % від % — не та відмова: %', v_tbl, v_role, v_msg;
+        end if;
+      end;
+    end loop;
+    begin
+      execute format('set local role %I', v_role);
+      if current_user <> v_role then
+        raise exception 'falsify: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+      end if;
+      perform public.platform_clinic_stats();
+      raise exception 'falsify: ACL_PROBE роль % викликає platform_clinic_stats()', v_role;
+    exception when insufficient_privilege then
+      get stacked diagnostics v_msg = message_text;
+      if position('platform_clinic_stats' in v_msg) = 0 then
+        raise exception 'falsify: ACL_PROBE platform_clinic_stats() від % — не та відмова: %', v_role, v_msg;
+      end if;
+    end;
+  end loop;
+  if current_user <> 'postgres' then
+    raise exception 'falsify: ACL_PROBE після проб роль не повернулась до postgres (%)', current_user;
+  end if;
+  -- Штатний запис — на ВЛАСНОМУ пробному центрі (не на живому: після першої
+  -- реальної зміни статусу PK platform_accounts зробив би пробу вічно червоною)
+  insert into public.clinics (name) values ('Проба 0206 ' || v_sfx) returning id into v_c;
   insert into public.platform_accounts (clinic_id, status, status_reason, status_changed_at, status_changed_by, plan, paid_until)
-    select id, 'suspended', 'проба', now(), v_u1, 'проба', current_date from public.clinics order by created_at limit 1;
+    values (v_c, 'suspended', 'проба ' || v_sfx, now(), v_u1, 'проба', current_date);
   insert into public.platform_log (operator_id, action, clinic_id, clinic_name, details)
-    select v_u1, 'clinic.status_changed', id, name, jsonb_build_object('from', 'trial', 'to', 'suspended') from public.clinics order by created_at limit 1;
+    values (v_u1, 'clinic.status_changed', v_c, 'Проба 0206 ' || v_sfx, jsonb_build_object('from', 'trial', 'to', 'suspended', 'reason', v_sfx));
   if (select count(*) from public.platform_clinic_stats()) <> (select count(*) from public.clinics)
-     or exists (select 1 from public.platform_clinic_stats() where staff_n is null or rooms_n is null or entries_total is null) then
-    raise exception 'falsify: platform_clinic_stats() — не по рядку на центр або NULL у лічильниках';
+     or exists (select 1 from public.platform_clinic_stats() where staff_n is null or rooms_n is null or entries_total is null)
+     or (select rooms_n from public.platform_clinic_stats() where clinic_id = v_c) <> 0 then
+    raise exception 'falsify: platform_clinic_stats() — не по рядку на центр, NULL у лічильниках або пробний центр не порожній';
   end if;
   -- Каскад: видалення оператора лишає журнал (operator_id → NULL), не ламає облік
   delete from public.platform_operators where id = v_u1;
-  if (select count(*) from public.platform_log where action = 'clinic.status_changed' and operator_id is null) <> 1
-     or (select status_changed_by from public.platform_accounts where status = 'suspended' and status_reason = 'проба') is not null then
+  if (select count(*) from public.platform_log where clinic_id = v_c and operator_id is null and details->>'reason' = v_sfx) <> 1
+     or (select status_changed_by from public.platform_accounts where clinic_id = v_c) is not null then
     raise exception 'falsify: on delete set null на operator_id / status_changed_by не спрацював';
   end if;
+  -- Каскад центру: видалення центру знімає облік, а журнал лишається з clinic_id NULL і назвою-знімком
+  delete from public.clinics where id = v_c;
+  if exists (select 1 from public.platform_accounts where clinic_id = v_c)
+     or (select count(*) from public.platform_log where clinic_id is null and clinic_name = 'Проба 0206 ' || v_sfx) <> 1 then
+    raise exception 'falsify: каскад видалення центру (accounts cascade, log set null) не спрацював';
+  end if;
 
-  raise exception 'FALSIFY_0206 verdict=PASS probes=A,B,C,D guard=%', md5(v_src);
+  -- ── E. червона базова лінія проби ролей: grant select on table public.platform_operators to anon; ──
+  begin
+    grant select on table public.platform_operators to anon;
+    foreach v_role in array array['anon', 'authenticated'] loop
+      foreach v_tbl in array array['platform_operators', 'platform_accounts', 'platform_log'] loop
+        begin
+          execute format('set local role %I', v_role);
+          if current_user <> v_role then
+            raise exception 'falsify-E: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+          end if;
+          execute format('select 1 from public.%I limit 1', v_tbl);
+          raise exception 'falsify-E: ACL_PROBE роль % читає %', v_role, v_tbl;
+        exception when insufficient_privilege then
+          get stacked diagnostics v_msg = message_text;
+          if position(v_tbl in v_msg) = 0 then
+            raise exception 'falsify-E: ACL_PROBE % від % — не та відмова: %', v_tbl, v_role, v_msg;
+          end if;
+        end;
+      end loop;
+      begin
+        execute format('set local role %I', v_role);
+        if current_user <> v_role then
+          raise exception 'falsify-E: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+        end if;
+        perform public.platform_clinic_stats();
+        raise exception 'falsify-E: ACL_PROBE роль % викликає platform_clinic_stats()', v_role;
+      exception when insufficient_privilege then
+        get stacked diagnostics v_msg = message_text;
+        if position('platform_clinic_stats' in v_msg) = 0 then
+          raise exception 'falsify-E: ACL_PROBE platform_clinic_stats() від % — не та відмова: %', v_role, v_msg;
+        end if;
+      end;
+    end loop;
+    if current_user <> 'postgres' then
+      raise exception 'falsify-E: ACL_PROBE після проб роль не повернулась до postgres (%)', current_user;
+    end if;
+    raise exception 'falsify: E — проба ролей НЕ почервоніла з грантом';
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    if position('ACL_PROBE' in v_msg) = 0 or position('anon' in v_msg) = 0 or position('platform_operators' in v_msg) = 0 then
+      raise exception 'falsify: E — не той провал проби ролей: %', v_msg;
+    end if;
+  end;
+  -- ── F. червона базова лінія проби ролей: grant execute on function public.platform_clinic_stats() to authenticated; ──
+  begin
+    grant execute on function public.platform_clinic_stats() to authenticated;
+    foreach v_role in array array['anon', 'authenticated'] loop
+      foreach v_tbl in array array['platform_operators', 'platform_accounts', 'platform_log'] loop
+        begin
+          execute format('set local role %I', v_role);
+          if current_user <> v_role then
+            raise exception 'falsify-F: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+          end if;
+          execute format('select 1 from public.%I limit 1', v_tbl);
+          raise exception 'falsify-F: ACL_PROBE роль % читає %', v_role, v_tbl;
+        exception when insufficient_privilege then
+          get stacked diagnostics v_msg = message_text;
+          if position(v_tbl in v_msg) = 0 then
+            raise exception 'falsify-F: ACL_PROBE % від % — не та відмова: %', v_tbl, v_role, v_msg;
+          end if;
+        end;
+      end loop;
+      begin
+        execute format('set local role %I', v_role);
+        if current_user <> v_role then
+          raise exception 'falsify-F: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+        end if;
+        perform public.platform_clinic_stats();
+        raise exception 'falsify-F: ACL_PROBE роль % викликає platform_clinic_stats()', v_role;
+      exception when insufficient_privilege then
+        get stacked diagnostics v_msg = message_text;
+        if position('platform_clinic_stats' in v_msg) = 0 then
+          raise exception 'falsify-F: ACL_PROBE platform_clinic_stats() від % — не та відмова: %', v_role, v_msg;
+        end if;
+      end;
+    end loop;
+    if current_user <> 'postgres' then
+      raise exception 'falsify-F: ACL_PROBE після проб роль не повернулась до postgres (%)', current_user;
+    end if;
+    raise exception 'falsify: F — проба ролей НЕ почервоніла з грантом';
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    if position('ACL_PROBE' in v_msg) = 0 or position('authenticated' in v_msg) = 0 or position('platform_clinic_stats' in v_msg) = 0 then
+      raise exception 'falsify: F — не той провал проби ролей: %', v_msg;
+    end if;
+  end;
+  -- після E і F (гранти відкотились із блоками) проба знову зелена
+  foreach v_role in array array['anon', 'authenticated'] loop
+    foreach v_tbl in array array['platform_operators', 'platform_accounts', 'platform_log'] loop
+      begin
+        execute format('set local role %I', v_role);
+        if current_user <> v_role then
+          raise exception 'falsify-після-EF: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+        end if;
+        execute format('select 1 from public.%I limit 1', v_tbl);
+        raise exception 'falsify-після-EF: ACL_PROBE роль % читає %', v_role, v_tbl;
+      exception when insufficient_privilege then
+        get stacked diagnostics v_msg = message_text;
+        if position(v_tbl in v_msg) = 0 then
+          raise exception 'falsify-після-EF: ACL_PROBE % від % — не та відмова: %', v_tbl, v_role, v_msg;
+        end if;
+      end;
+    end loop;
+    begin
+      execute format('set local role %I', v_role);
+      if current_user <> v_role then
+        raise exception 'falsify-після-EF: ACL_PROBE роль % не перемкнулась (current_user=%)', v_role, current_user;
+      end if;
+      perform public.platform_clinic_stats();
+      raise exception 'falsify-після-EF: ACL_PROBE роль % викликає platform_clinic_stats()', v_role;
+    exception when insufficient_privilege then
+      get stacked diagnostics v_msg = message_text;
+      if position('platform_clinic_stats' in v_msg) = 0 then
+        raise exception 'falsify-після-EF: ACL_PROBE platform_clinic_stats() від % — не та відмова: %', v_role, v_msg;
+      end if;
+    end;
+  end loop;
+  if current_user <> 'postgres' then
+    raise exception 'falsify-після-EF: ACL_PROBE після проб роль не повернулась до postgres (%)', current_user;
+  end if;
+
+  raise exception 'FALSIFY_0206 verdict=PASS probes=A,B,C,D,E,F guard=%', md5(v_src);
 end
 $falsify$;

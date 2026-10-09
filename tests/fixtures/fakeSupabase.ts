@@ -33,6 +33,14 @@ export interface FakeDb {
       сказати це явно). Журнал викликів auth.admin — у `authCalls`. */
   nextUserId?: string;
   authCalls?: string[];
+  /** с84 (ревʼю, лінза B): АРГУМЕНТИ викликів auth.admin — щоб тест міг сказати,
+      з яким саме app_metadata / паролем створено або оновлено акаунт, а не лише
+      що виклик був. Поруч із `authCalls`, не замість: старі пини на рядки живуть. */
+  authArgs?: Array<{ method: "createUser" | "updateUserById" | "deleteUser"; id?: string; attrs?: unknown }>;
+  /** с84 (ревʼю, лінза C, L-2): викликається ПІСЛЯ кожного застосованого
+      insert/update — шов, через який тест імітує КОНКУРЕНТНИЙ запит («поки цей
+      роут писав, інший вимкнув його самого»). Двійник без нього гонок не вміє. */
+  afterWrite?: (table: string, kind: "insert" | "update") => void;
   /** с59 (пакет 39, ревʼю А): помилка, яку віддасть `auth.admin.updateUserById`
       — без неї шлях «GoTrue відмовив» неперевірюваний, а саме на ньому
       подія журналу НЕ сміє зʼявитись. */
@@ -192,11 +200,13 @@ class FakeQuery {
 
     if (this.inserted) {
       this.db.tables[this.table] = rows.concat(this.inserted.map((r) => ({ ...r })));
+      this.db.afterWrite?.(this.table, "insert");
       return { data: null, error: null };
     }
     if (this.patch) {
       const patch = this.patch;
       this.db.tables[this.table] = rows.map((r) => (this.matches(r) ? { ...r, ...patch } : r));
+      this.db.afterWrite?.(this.table, "update");
       return { data: null, error: null };
     }
 
@@ -350,14 +360,20 @@ export function fakeAdminClient(db: FakeDb) {
         {
           admin: strict(
             {
-              createUser: async () => {
+              createUser: async (attrs: unknown) => {
                 (db.authCalls ??= []).push("createUser");
+                (db.authArgs ??= []).push({ method: "createUser", attrs });
                 if (!db.nextUserId) throw new Error("FakeSupabase: auth.admin.createUser без db.nextUserId — тест не сказав, який id віддати");
                 return { data: { user: { id: db.nextUserId } }, error: null };
               },
-              deleteUser: async (id: string) => { (db.authCalls ??= []).push(`deleteUser:${id}`); return { data: null, error: null }; },
-              updateUserById: async (id: string) => {
+              deleteUser: async (id: string) => {
+                (db.authCalls ??= []).push(`deleteUser:${id}`);
+                (db.authArgs ??= []).push({ method: "deleteUser", id });
+                return { data: null, error: null };
+              },
+              updateUserById: async (id: string, attrs: unknown) => {
                 (db.authCalls ??= []).push(`updateUserById:${id}`);
+                (db.authArgs ??= []).push({ method: "updateUserById", id, attrs });
                 return { data: null, error: db.authUpdateError ?? null };
               },
             },

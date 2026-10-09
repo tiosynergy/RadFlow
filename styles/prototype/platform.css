@@ -75,8 +75,12 @@
 
 /* ── Картка ── */
 .pf-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px 20px; margin-bottom: 16px; }
-.pf-card h2 { font-size: 0.9375rem; font-weight: 650; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.pf-card h2 .spacer { flex: 1; }
+.pf-card h2 { font-size: 0.9375rem; font-weight: 650; margin: 0 0 12px; }
+/* Рядок заголовка картки: <h2> лише з назвою, поруч — бейдж / кнопка (поза
+   заголовком, щоб імʼя заголовка для ридера не містило кнопку). */
+.pf-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; }
+.pf-card-head h2 { margin: 0; }
+.pf-card-head .spacer { flex: 1; }
 .pf-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 .pf-kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 0.8125rem; margin: 0; }
 .pf-kv dt { color: var(--text-muted); }
@@ -101,6 +105,15 @@
 }
 .pf-secret code { font-family: var(--mono); font-size: 0.875rem; color: var(--text); overflow-wrap: anywhere; }
 .pf-hint { font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; }
+/* Спінер async-кнопок (канон `.rf-spin` живе в radflow-screens.css, якого дерево
+   /platform НЕ імпортує — ревʼю с84 р2, L-4: «Створюємо…» крутилось без спінера).
+   Копія під .pf-app з власним іменем keyframes, щоб не перетинатися з каноном. */
+.pf-app .rf-spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: pf-spin .7s linear infinite; vertical-align: -1px; }
+@keyframes pf-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pf-app .rf-spin { animation: none; } }
+/* На помаранчевій підкладці (--orange-bg над --card) --text-muted дає 4.17:1 —
+   тут підпис іде --text-secondary (4.73:1; пара в scripts/contrast-audit.mjs). */
+.pf-secret .pf-hint { color: var(--text-secondary); }
 .pf-err { color: var(--red-text); font-size: 0.8125rem; }
 .pf-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .pf-log-time { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 0.75rem; }

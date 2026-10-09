@@ -13,6 +13,22 @@ type BodyOk<T> = { ok: true; data: T };
 type BodyFail = { ok: false; res: NextResponse };
 
 /**
+ * Тіло — справжній JSON-запит (с84, ревʼю лінза C, L-4: login-CSRF).
+ *
+ * Для роутів, що ВІДКРИВАЮТЬ сесію без попередньої (/api/auth/login, автовхід
+ * /api/account/set-password): cookie там не потрібні, тож SameSite їх не стереже.
+ * Чужий сайт може відправити звичайну HTML-форму з `enctype="text/plain"` і
+ * JSON-подібним тілом — `req.json()` його розбере, і браузер жертви отримає сесію
+ * АТАКУВАЛЬНИКА (далі жертва вносить дані в чужий акаунт). `application/json`
+ * форма поставити не може, а `fetch` з чужого origin з таким заголовком —
+ * це CORS preflight, на який Next не відповідає дозволом. Наші форми шлють
+ * саме його (LoginPage, SetPasswordPage).
+ */
+export function isJsonRequest(req: Request): boolean {
+  return /^application\/json\s*(;|$)/i.test(req.headers.get("content-type") ?? "");
+}
+
+/**
  * Розбір і валідація JSON-тіла роута.
  * @param message  повідомлення користувачу (за замовчуванням загальне).
  *                 Роути з власним текстом (напр. /auth/login) передають своє —

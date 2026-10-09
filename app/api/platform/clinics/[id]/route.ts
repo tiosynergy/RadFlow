@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { requirePlatformOperator } from "@/lib/platformAuth";
+import { PLATFORM_LOG_COLUMNS, hydrateLogRows, requirePlatformOperator, type PlatformLogRaw } from "@/lib/platformAuth";
 import { safeDbError, zUuid } from "@/lib/validation";
-import { effectiveStatus, type ClinicStats, type PlatformAccountRow, type PlatformLogItem } from "@/lib/platformContract";
+import { effectiveStatus, type ClinicStats, type PlatformAccountRow } from "@/lib/platformContract";
 import { isTechnicalEmail } from "@/lib/login";
+import { logError } from "@/lib/serverLog";
 
 /* ===== GET /api/platform/clinics/[id] — картка центру як клієнта (0206, с84) =====
    Що віддає: реквізити центру (назва, місто, адреса, контакти ЦЕНТРУ, зона, дати),
@@ -10,14 +11,33 @@ import { isTechnicalEmail } from "@/lib/login";
    (ПІБ, роль, логін, стан запрошення; робочі контакти — ЛИШЕ в адміністраторів:
    це контактні особи клієнта), лічильники направників і керівників (без імен:
    це люди інших сторін), інтеграції (без секретів: назва ключа, префікс, стан;
-   вебхук — url і стан; дзеркало Google — стан/останній синк) і останні 50 записів
-   журналу платформи по центру.
+   вебхук — лише ХОСТ і стан: повний url у Zapier/Make сам є токеном доступу,
+   ревʼю с84, лінза C, L-5; дзеркало Google — стан/останній синк) і останні 50 записів
+   журналу платформи по центру (`details` — лише відомі ключі, біла проекція).
+   Агрегати — best-effort: збій `platform_clinic_stats()` дає `stats: null` і слід
+   у лозі, а не 500 на всю картку (ревʼю с84, лінза B).
    ЧОГО НЕ ВІДДАЄ і не має: жодного рядка `queue_entries` / `waitlist_entries` /
    `patient_cases` / `doctors` / `referrer_private` — пацієнтів оператор не бачить. */
 
 export const dynamic = "force-dynamic";
 
 const STATUS_LIMIT = 50;
+
+/** Хост вебхука без шляху й запиту (у шляху буває токен). У сервісів на кшталт
+    Pipedream ідентифікатор ендпоінта — у ЛІВІЙ мітці хоста (eoXXXX.m.pipedream.net),
+    тож за трьох і більше міток ліва маскується: `*.m.pipedream.net` (ревʼю с84 р2,
+    L-8). Оператору досить провайдера і стану. Не URL — «—». */
+function webhookHost(url: unknown): string {
+  try {
+    const host = new URL(String(url)).host;
+    if (!host) return "—";
+    if (/^\[|^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(host)) return host;
+    const labels = host.split(".");
+    return labels.length >= 3 ? ["*", ...labels.slice(1)].join(".") : host;
+  } catch {
+    return "—";
+  }
+}
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const gate = await requirePlatformOperator({ path: new URL(req.url).pathname });
@@ -51,12 +71,15 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     admin.from("integration_webhooks").select("id, url, enabled, created_at").eq("clinic_id", clinicId),
     admin.from("google_calendar_connections").select("status, enabled, last_sync_at, last_error_code").eq("clinic_id", clinicId).maybeSingle(),
     admin.from("platform_log")
-      .select("id, occurred_at, operator_id, action, clinic_id, clinic_name, target_operator_id, details")
+      .select(PLATFORM_LOG_COLUMNS)
       .eq("clinic_id", clinicId).order("occurred_at", { ascending: false }).limit(STATUS_LIMIT),
   ]);
-  const firstErr = [acc, staff, refs, ceos, rooms, stats, keys, hooks, gcal, log].find((r) => r.error);
+  const firstErr = [acc, staff, refs, ceos, rooms, keys, hooks, gcal, log].find((r) => r.error);
   if (firstErr?.error) {
     return NextResponse.json({ error: safeDbError("api/platform/clinic.read", firstErr.error) }, { status: 500 });
+  }
+  if (stats.error) {
+    logError({ event: "platform.stats_read_failed", actorId: gate.operator.id, clinicId, errorCode: stats.error.code ?? null, message: stats.error.message });
   }
 
   const account: PlatformAccountRow | null = acc.data
@@ -88,33 +111,17 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     };
   });
 
-  const statRow = ((stats.data ?? []) as Array<ClinicStats & { clinic_id: string }>)
+  const statRow = ((stats.error ? [] : stats.data ?? []) as Array<ClinicStats & { clinic_id: string }>)
     .find((s) => String(s.clinic_id).toLowerCase() === clinicId.toLowerCase()) ?? null;
   const statsOut: ClinicStats | null = statRow
     ? { ...statRow, entries_total: Number(statRow.entries_total), entries_30d: Number(statRow.entries_30d) }
     : null;
 
-  /* Імена операторів у журналі — окремим читанням за id (журнал імен не зберігає). */
-  const logRows = (log.data ?? []) as Array<Omit<PlatformLogItem, "operator_name" | "target_operator_name" | "details"> & { details: unknown }>;
-  const opIds = [...new Set(logRows.flatMap((r) => [r.operator_id, r.target_operator_id]).filter((x): x is string => !!x))];
-  const names = new Map<string, string>();
-  if (opIds.length) {
-    const { data: ops, error: oErr } = await admin.from("platform_operators").select("id, full_name, email").in("id", opIds);
-    if (oErr) return NextResponse.json({ error: safeDbError("api/platform/clinic.operators", oErr) }, { status: 500 });
-    for (const o of ops ?? []) names.set(String(o.id).toLowerCase(), o.full_name || o.email);
-  }
-  const logOut: PlatformLogItem[] = logRows.map((r) => ({
-    id: r.id,
-    occurred_at: r.occurred_at,
-    operator_id: r.operator_id,
-    operator_name: r.operator_id ? names.get(String(r.operator_id).toLowerCase()) ?? null : null,
-    action: r.action,
-    clinic_id: r.clinic_id,
-    clinic_name: r.clinic_name,
-    target_operator_id: r.target_operator_id,
-    target_operator_name: r.target_operator_id ? names.get(String(r.target_operator_id).toLowerCase()) ?? null : null,
-    details: (r.details && typeof r.details === "object" && !Array.isArray(r.details) ? r.details : {}) as Record<string, unknown>,
-  }));
+  /* Імена операторів у журналі — окремим читанням за id (журнал імен не
+     зберігає); `details` — біла проекція (hydrateLogRows). */
+  const hydrated = await hydrateLogRows(admin, (log.data ?? []) as PlatformLogRaw[]);
+  if (!hydrated.ok) return NextResponse.json({ error: safeDbError("api/platform/clinic.operators", hydrated.error) }, { status: 500 });
+  const logOut = hydrated.items;
 
   return NextResponse.json({
     clinic: {
@@ -132,7 +139,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     rooms: rooms.data ?? [],
     integrations: {
       keys: keys.data ?? [],
-      webhooks: hooks.data ?? [],
+      webhooks: (hooks.data ?? []).map((w) => ({ id: w.id, host: webhookHost(w.url), enabled: w.enabled, created_at: w.created_at })),
       gcal: gcal.data ?? null,
     },
     log: logOut,

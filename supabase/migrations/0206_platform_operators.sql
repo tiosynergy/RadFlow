@@ -52,6 +52,8 @@
 --   1. `node scripts/build-0206-reprint.mjs` → цей файл + `scripts/frag/0206_*.sql`.
 --   2. Тимчасова гілка на GitHub ЛИШЕ з фрагами → `net.http_get` → sha256 =
 --      контейнер → `scripts/frag/0206_dryrun.sql` (виняток `DRYRUN_0206_ROLLBACK …`).
+--      ⚠️ `set statement_timeout = '5min'` — ОКРЕМИМ стейтментом перед обгорткою
+--      с79 (execute content усередині DO-блоку: всередині execute він інертний, 0192).
 --   3. `scripts/frag/0206_apply.sql` (commit) → контрольне читання.
 --   4. `scripts/frag/0206_falsify.sql` (виняток `FALSIFY_0206 verdict=PASS …`).
 --   5. `supabase/smoke/0206_platform_operators_smoke.sql` → `SMOKE_OK`.
@@ -86,7 +88,7 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'invariants_check'
      and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
-  if md5(v_src) not in ('49cf5fb8af00195f1e656740248d8e43', '51abb8c19bc86645d6b40e31afcdccd4') then
+  if md5(v_src) not in ('49cf5fb8af00195f1e656740248d8e43', '51b87021f7306ff1ef2a864bc1d8d74c') then
     raise exception '0206: тіло сторожа % — ні 0205, ні 0206; правка наосліп заборонена', md5(v_src);
   end if;
 end
@@ -137,7 +139,7 @@ create table if not exists public.platform_log (
   details            jsonb not null default '{}'::jsonb,
   constraint platform_log_action_chk check (action ~ '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$' and char_length(action) <= 64),
   constraint platform_log_clinic_name_chk check (clinic_name is null or char_length(clinic_name) <= 200),
-  constraint platform_log_no_pii_chk check (not (details ?| array['patient_name', 'patient_phone', 'patient_email', 'patient_dob', 'name', 'phone', 'email', 'dob', 'password', 'token', 'note', 'notes', 'studies'])),
+  constraint platform_log_no_pii_chk check (not (details ?| array['patient_name', 'patient_phone', 'patient_email', 'patient_dob', 'name', 'phone', 'email', 'dob', 'contraindications', 'note', 'notes', 'studies', 'weight', 'refresh_token', 'access_token', 'id_token', 'token', 'code', 'client_secret', 'calendar_id', 'google_email', 'account_email', 'password', 'temp_password', 'tmp_password', 'pass', 'secret'])),
   constraint platform_log_details_size_chk check (pg_column_size(details) <= 8192)
 );
 create index if not exists platform_log_clinic_idx on public.platform_log (clinic_id, occurred_at desc);
@@ -147,6 +149,8 @@ alter table public.platform_operators enable row level security;
 alter table public.platform_accounts  enable row level security;
 alter table public.platform_log       enable row level security;
 revoke all on table public.platform_operators, public.platform_accounts, public.platform_log from public, anon, authenticated;
+-- service_role — ЯВНО, не з дефолтного ACL (пастка 0122: дефолт — не контракт)
+grant select, insert, update, delete on table public.platform_operators, public.platform_accounts, public.platform_log to service_role;
 
 -- ── 2. Функція статистики по центрах (INVOKER, лише service_role) ──────────
 create or replace function public.platform_clinic_stats()
@@ -2533,7 +2537,7 @@ begin
       ('k:migration_ledger','1:5c36215da16a'),
       ('k:patient_cases','4:882687b5af46'),
       ('k:platform_accounts','8:e27d5034f4e4'),
-      ('k:platform_log','8:3c2b9b4b1a90'),
+      ('k:platform_log','8:7040d6ef2253'),
       ('k:platform_operators','7:609ad073e819'),
       ('k:profiles','5:badfe89d1681'),
       ('k:queue_delay_events','5:4491f3b0db39'),
@@ -3051,7 +3055,7 @@ begin
 end;
 $function$;
 
-comment on function public.invariants_check(boolean) is 'guard_body_md5=51abb8c19bc86645d6b40e31afcdccd4;len=181235';
+comment on function public.invariants_check(boolean) is 'guard_body_md5=51b87021f7306ff1ef2a864bc1d8d74c;len=181235';
 
 -- ── 4. ПОВНИЙ сторож після передруку і DDL (≈9 с; має бути зеленим, крім названого №13) ─
 do $chk$
@@ -3082,7 +3086,7 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'invariants_check'
      and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
-  if md5(v_src) is distinct from '51abb8c19bc86645d6b40e31afcdccd4' or length(v_src) <> 181235
+  if md5(v_src) is distinct from '51b87021f7306ff1ef2a864bc1d8d74c' or length(v_src) <> 181235
      or obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
         is distinct from 'guard_body_md5=' || md5(v_src) || ';len=' || length(v_src) then
     raise exception '0206: тіло сторожа або самопін не ті: % / %', md5(v_src), length(v_src);
@@ -3103,6 +3107,11 @@ begin
         left join pg_roles r on r.oid = a.grantee
        where c.relnamespace = 'public'::regnamespace and c.relname in ('platform_operators', 'platform_accounts', 'platform_log')
          and coalesce(r.rolname::text, 'PUBLIC') in ('anon', 'authenticated', 'PUBLIC')
+      union all
+      -- service_role мусить МАТИ всі чотири права явно (гейт і роути ходять ним)
+      select 'no_service_role:' || t || ':' || p
+        from unnest(array['platform_operators', 'platform_accounts', 'platform_log']::text[]) t cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]) p
+       where to_regclass('public.' || t) is not null and not has_table_privilege('service_role', 'public.' || t, p)
     ) x;
   if v_bad is not null then
     raise exception '0206: обʼєкти пакета не ті: %', v_bad;
@@ -3147,7 +3156,9 @@ commit;
 --  1. База: `scripts/frag/0206_rollback.sql` — знімає функцію і три таблиці (лише
 --     ПОРОЖНІ), тіло сторожа 0205 (49cf5fb8af00195f1e656740248d8e43 / 179066), самопін 0205,
 --     рядок леджера. Якщо в таблицях уже є рядки — спершу вивантажити і
---     спорожнити за явним списком id. Перевіряти ОКРЕМИМ запитом після commit.
+--     спорожнити за явним списком id; auth-акаунти операторів видалити за явним
+--     списком (інакше старе тіло №24 назве їх сиротами — відкат відмовить).
+--     Перевіряти ОКРЕМИМ запитом після commit.
 --  2. Git — ОДНИМ кроком: видалити цей файл, `scripts/frag/0206_*.sql`,
 --     `scripts/build-0206-reprint.mjs`, `supabase/smoke/0206_platform_operators_smoke.sql`,
 --     `tests/platformOperators0206.test.ts`, контур `app/platform`, `app/api/platform`,
