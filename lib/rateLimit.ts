@@ -39,14 +39,19 @@ export function rlKey(prefix: string, raw: string): string {
        процесу, інакше перший же збій зробить лог непридатним. */
 export type RlFailure = "open" | "closed";
 
-/* Throttle слідів: не частіше ніж раз на 60 с на КЛЮЧ-ПРЕФІКС. У памʼяті
-   процесу — навмисно: писати в БД про те, що БД недоступна, безглуздо. */
+/* Throttle слідів: не частіше ніж раз на 60 с на ПАРУ «префікс + рішення». У
+   памʼяті процесу — навмисно: писати в БД про те, що БД недоступна, безглуздо.
+   ⚠️ с85 (Н-27(к), ревʼю с84-B лінза C): раніше ключем був лише префікс, а в
+   усіх роутів платформи він один — `platform`. Тоді рядок `decision=open` від
+   «Створити оператора» глушив на хвилину слід «Змінити пароль», який у той же
+   час відповідав 429 (fail-closed), — лог казав протилежне тому, що бачила людина. */
 const lastLogged = new Map<string, number>();
 function logOnce(prefix: string, reason: string, decision: RlFailure): void {
   const now = Date.now();
-  const prev = lastLogged.get(prefix) ?? 0;
+  const slot = `${prefix}|${decision}`;
+  const prev = lastLogged.get(slot) ?? 0;
   if (now - prev < 60_000) return;
-  lastLogged.set(prefix, now);
+  lastLogged.set(slot, now);
   logError({
     event: "ratelimit.unavailable",
     errorCode: reason,

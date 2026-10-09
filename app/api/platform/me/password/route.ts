@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/server";
 import { checkCurrentPassword } from "@/lib/supabase/passwordCheck";
 import { isJsonRequest, parseBody } from "@/lib/validationHttp";
 import { zPassword } from "@/lib/validation";
+import { passwordTooLong, PASSWORD_LIMIT_HINT } from "@/lib/passwordRules";
 import { logError } from "@/lib/serverLog";
 
 /* ===== POST /api/platform/me/password — оператор змінює ВЛАСНИЙ пароль на свій (с84) =====
@@ -43,15 +44,15 @@ const sOwnPassword = z.object({
   new_password: zPassword,
 });
 
-/** bcrypt рахує лише 72 БАЙТИ; довший пароль GoTrue відхиляє (validation_failed).
-    Кирилиця — 2 байти на літеру, тож це ≈36 кириличних символів. */
-const PASSWORD_MAX_BYTES = 72;
-const byteLen = (s: string) => new TextEncoder().encode(s).length;
+/* bcrypt рахує лише 72 БАЙТИ; довший пароль GoTrue відхиляє (validation_failed).
+   Кирилиця — 2 байти на літеру, тож це ≈36 кириличних символів. Правило — одне на
+   всі форми паролів (lib/passwordRules.ts, с85); текст тут свій — у діалозі два
+   поля пароля, і «Новий» каже, яке з них. */
 
 const SESSION_GONE = "Сесія завершилась — увійдіть знову";
 const WRONG_CURRENT = "Поточний пароль невірний";
 const SAME = "Новий пароль збігається з поточним";
-const TOO_LONG = "Новий пароль задовгий: до 72 байт (≈72 латинських або ≈36 кириличних символів)";
+const TOO_LONG = `Новий пароль задовгий: ${PASSWORD_LIMIT_HINT}`;
 /* Мережа впала або GoTrue відповів 5xx ПІСЛЯ того, як міг уже зберегти пароль:
    результат невідомий — кажемо це прямо, щоб людина не лишилась без входу. */
 const UNKNOWN_OUTCOME = "Не вдалося підтвердити зміну пароля. Спробуйте увійти з НОВИМ паролем, а якщо не вийде — зі старим.";
@@ -77,7 +78,7 @@ function updateError(e: AuthError): { status: number; error: string; field?: Fie
     if (code === "same_password") return { status: 400, field: "new", error: SAME };
     if (code === "current_password_invalid" || code === "current_password_required") return { status: 400, field: "current", error: WRONG_CURRENT };
     if (code === "reauthentication_needed") return { status: 400, error: "Для зміни пароля вийдіть, увійдіть знову й повторіть" };
-    if (code === "validation_failed") return { status: 400, field: "new", error: "Сервер входу не прийняв цей пароль — оберіть інший (до 72 байт, без незвичних символів)" };
+    if (code === "validation_failed") return { status: 400, field: "new", error: "Сервер входу не прийняв цей пароль — оберіть інший (до 72 байтів, без незвичних символів)" };
     /* Ліміт GoTrue на PUT /user (per-IP): пароль навіть не оцінювався — «оберіть
        інший» тут відправило б людину назад у той самий ліміт. */
     if (e.status === 429 || code === "over_request_rate_limit") return { status: 429, error: "Сервіс входу тимчасово обмежив запити — спробуйте за кілька хвилин (пароль не змінено)" };
@@ -103,7 +104,7 @@ export async function POST(req: Request) {
   const parsed = await parseBody("api/platform/me/password", req, sOwnPassword, "Вкажіть поточний пароль і новий — мінімум 8 символів");
   if (!parsed.ok) return parsed.res;
   const { current_password, new_password } = parsed.data;
-  if (byteLen(new_password) > PASSWORD_MAX_BYTES) {
+  if (passwordTooLong(new_password)) {
     return NextResponse.json({ error: TOO_LONG, field: "new" }, { status: 400 });
   }
   if (current_password === new_password) {

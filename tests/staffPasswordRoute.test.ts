@@ -36,7 +36,9 @@ vi.mock("@/lib/importantEvents.server", () => ({
     emitted(...a);
   },
 }));
-vi.mock("@/lib/serverLog", () => ({ logError: () => {} }));
+/* с85 (Н-23(б)): слід збою читання в авторизації — перевіряється, тож лог ловимо. */
+const logged: Array<Record<string, unknown>> = [];
+vi.mock("@/lib/serverLog", () => ({ logError: (a: Record<string, unknown>) => { logged.push(a); } }));
 
 const { POST } = await import("@/app/api/staff/password/route");
 
@@ -57,7 +59,7 @@ const bystander = (): Row => ({ id: BYSTANDER, clinic_id: CLINIC, role: "radiolo
 beforeEach(() => {
   db.tables = { profiles: [profile(), bystander()], ceo_access: [], referral_access: [] };
   db.errors = {}; db.errorsAfter = undefined; db.rpc = {}; db.seen = {}; db.queries = []; db.authCalls = []; db.authUpdateError = undefined;
-  emitted.mockReset(); order.length = 0;
+  emitted.mockReset(); order.length = 0; logged.length = 0;
 });
 const untouchedBystander = () => expect(db.tables.profiles.find((r) => r.id === BYSTANDER), "сусідній профіль зачеплено").toEqual(bystander());
 
@@ -257,5 +259,82 @@ describe("/api/staff/password — подія в журналі на скидан
     const { status } = await call({ userId: TARGET, action: "reset" });
     expect(status).toBe(404);
     expect(emitted).not.toHaveBeenCalled();
+  });
+});
+
+/* ═══════ с85: межа 72 байти і слід збою читання в авторизації ═══════ */
+describe("/api/staff/password — с85 (Н-27(з), Н-23(б))", () => {
+  const REF_ACCESS = (over: Row = {}): Row => ({ id: "ra1", referrer_id: TARGET, clinic_id: CLINIC, status: "active", ...over });
+  const refProfile = () => [profile({ role: "referrer", clinic_id: null }), bystander()];
+
+  it("set: пароль довший за 72 БАЙТИ → 400 з поясненням ДО будь-якого читання і без GoTrue", async () => {
+    const tooLong = "Я".repeat(36) + "1"; // 73 байти; 37 символів ≪ 200 зі схеми
+    const { status, body } = await call({ userId: TARGET, action: "set", password: tooLong });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/до 72 байт/);
+    expect(db.queries ?? [], "роут читав БД до відмови за довжиною").toEqual([]);
+    expect(db.authCalls).toEqual([]);
+    expect(emitted).not.toHaveBeenCalled();
+  });
+
+  it("set: рівно 72 байти — проходить (межа не зсунута на байт)", async () => {
+    const { status } = await call({ userId: TARGET, action: "set", password: "Я".repeat(35) + "1a" });
+    expect(status).toBe(200);
+    expect(db.authCalls).toEqual([`updateUserById:${TARGET}`]);
+  });
+
+  it("CEO: збій читання ceo_access → 403 як і раніше, але зі слідом у лозі", async () => {
+    db.tables.profiles = [profile({ role: "ceo", clinic_id: null }), bystander()];
+    db.tables.ceo_access = [{ id: "a", ceo_id: TARGET, clinic_id: CLINIC, status: "active" }];
+    db.errors = { ceo_access: { message: "boom" } };
+    const { status, body } = await call({ userId: TARGET, action: "reset" });
+    expect(status).toBe(403);
+    expect(body.error).toBe("Немає прав керувати паролем цього акаунта");
+    expect(db.authCalls).toEqual([]);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ event: "staff_password.authz_read_failed", actorId: ADMIN, clinicId: CLINIC, entityId: TARGET });
+    expect(String(logged[0].errorCode)).toMatch(/^ceo_access:/);
+  });
+
+  it("направник: збій читання referral_access → 403 і слід у лозі", async () => {
+    db.tables.profiles = refProfile();
+    db.tables.referral_access = [REF_ACCESS()];
+    db.errors = { referral_access: { message: "boom" } };
+    const { status } = await call({ userId: TARGET, action: "reset" });
+    expect(status).toBe(403);
+    expect(logged).toHaveLength(1);
+    expect(String(logged[0].errorCode)).toMatch(/^referral_access:/);
+  });
+
+  it("збій читання профілю цілі → 404 як і раніше, але зі слідом", async () => {
+    db.errors = { profiles: { message: "boom" } };
+    expect((await call({ userId: TARGET, action: "reset" })).status).toBe(404);
+    expect(logged).toHaveLength(1);
+    expect(String(logged[0].errorCode)).toMatch(/^profiles:/);
+  });
+
+  /* Ревʼю с85 (лінза B): двійник на 0 рядків у `.single()` віддає `error: null`, а
+     справжній postgrest-js — 406 з `code: "PGRST116"`. Без цього кейсу виняток для
+     PGRST116 можна було прибрати, і всі тести лишались зеленими. */
+  it("справжня форма «0 рядків» від .single() (PGRST116) → 404 без сліду в лозі", async () => {
+    const pgrst116 = { code: "PGRST116", message: "JSON object requested, multiple (or no) rows returned" };
+    db.errors = { profiles: pgrst116 };
+    expect((await call({ userId: TARGET, action: "reset" })).status).toBe(404);
+    expect(logged).toEqual([]);
+  });
+
+  it("збій мережі (postgrest-js кладе code = \"\") — у сліді «?», а не порожній код", async () => {
+    const net = { code: "", message: "TypeError: fetch failed" };
+    db.errors = { profiles: net };
+    expect((await call({ userId: TARGET, action: "reset" })).status).toBe(404);
+    expect(logged).toHaveLength(1);
+    expect(logged[0].errorCode).toBe("profiles:?");
+  });
+
+  it("законна відмова без збою (грант відсутній) — без сліду: лог не засмічується 403-ми", async () => {
+    db.tables.profiles = [profile({ role: "ceo", clinic_id: null }), bystander()];
+    db.tables.ceo_access = [];
+    expect((await call({ userId: TARGET, action: "reset" })).status).toBe(403);
+    expect(logged).toEqual([]);
   });
 });
