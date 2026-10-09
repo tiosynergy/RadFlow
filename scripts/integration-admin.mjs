@@ -5,7 +5,8 @@
      node scripts/integration-admin.mjs partner:onboard --clinic <uuid> --name "RIS Х" \
           [--url https://…] [--base https://rad-flow-tau.vercel.app] [--scopes …]
      node scripts/integration-admin.mjs key:create --clinic <uuid> --name "RIS Х" \
-          [--scopes slots:read,appointments:read,events:write] [--mode A|B]
+          [--scopes "slots:read,appointments:read,events:write"] [--mode A|B]
+          (у PowerShell список скоупів — у лапках: кома без них ділить аргумент)
      node scripts/integration-admin.mjs key:revoke --id <uuid>
      node scripts/integration-admin.mjs webhook:set --clinic <uuid> --url https://… \
           [--secret <32+ символів; без опції — згенерується]
@@ -234,9 +235,28 @@ async function main() {
     console.log(partnerBrief({
       baseUrl, clinicName: clinicRow.name, keyId: data.id, scopes, webhookUrl: hookUrl,
     }));
-    console.log(`\n  Токен передайте ОКРЕМИМ захищеним каналом, не разом із цією пам'яткою.`);
-    console.log(`  Далі перевірте канал живцем:`);
-    console.log(`    node scripts/integration-live-check.mjs --base ${baseUrl} --token <ТОКЕН>`);
+    /* Підказка перевірки (с84-C): партнерським ключем канал НЕ перевіряють — його
+       порожнє «останнє звернення» показує перше підключення партнера; токен — лише
+       змінною з буфера (рядок із самим токеном PowerShell 5.1 пише в історію). */
+    if (/live[-_ ]?check/i.test(name)) {
+      if (hookUrl) {
+        console.log(`\n  ⚠️  Ключ перевірки створено з --url: вебхук центру ВЖЕ перезаписано новим секретом`);
+        console.log(`     (надруковано вище) — передайте його партнеру; webhook:disable НЕ виконуйте, якщо`);
+        console.log(`     вебхук партнерський. Надалі ключ перевірки — без --url.`);
+      }
+      console.log(copied
+        ? `\n  Це ключ ПЕРЕВІРКИ. Токен уже в буфері — далі (перший рядок набрати руками):`
+        : `\n  Це ключ ПЕРЕВІРКИ. Буфер не заповнено: скопіюйте токен з екрана вище, далі (перший рядок набрати руками):`);
+      console.log(`    $env:RADFLOW_TOKEN = Get-Clipboard`);
+      console.log(`    node scripts/integration-live-check.mjs --base ${baseUrl}`);
+      console.log(`    node scripts/integration-admin.mjs key:revoke --id ${data.id}`);
+      console.log(`    Remove-Item Env:\\RADFLOW_TOKEN`);
+    } else {
+      const baseArg = opts.base ? ` --base ${baseUrl}` : "";
+      console.log(`\n  Токен передайте ОКРЕМИМ захищеним каналом, не разом із цією пам'яткою.`);
+      console.log(`  Канал перевіряйте ОКРЕМИМ ключем, не цим (docs/integration-keys-runbook.md §3):`);
+      console.log(`    node scripts/integration-admin.mjs partner:onboard --clinic ${clinic} --name "LIVE-CHECK"${baseArg}   (без --url)`);
+    }
     return;
   }
 
