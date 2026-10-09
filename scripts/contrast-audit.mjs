@@ -246,6 +246,7 @@ const CSS_FILES = [
   "styles/prototype/radflow-screens.css",
   "styles/prototype/radflow-wizard.css",
   "styles/prototype/radiologist.css",
+  "styles/prototype/platform.css",
   "components/register.css",
 ];
 
@@ -255,7 +256,7 @@ const CSS_FILES = [
 const LINE_FILL_OK = new Set([
   ".tl-dot.blue", ".ss-dot.blue", ".kc-dot.blue", ".qd-seg-dot.blue",
   ".clp-dot.blue", ".cal-day .cdot", ".pulse-dot", ".pulse-dot::after",
-  ".sb-logo .dot", ".wiz-logo .dot", ".reg-root .logo .dot",
+  ".sb-logo .dot", ".wiz-logo .dot", ".reg-root .logo .dot", ".pf-logo .dot",
   ".imp-prog-fill", ".wiz-prog-fill",
   ".density-slider::-webkit-slider-thumb", ".density-slider::-moz-range-thumb",
 ]);

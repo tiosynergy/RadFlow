@@ -5,6 +5,8 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { clientIp, rateLimitOk, rlKey } from "@/lib/rateLimit";
 import { parseBody } from "@/lib/validationHttp";
 import { isTechnicalEmail } from "@/lib/login";
+import { logError } from "@/lib/serverLog";
+import { LOGIN_BLOCKED_STATUSES, isClinicStatus } from "@/lib/platformContract";
 
 /* Межа довжини — теж захист: identifier іде в ключ rate-limit (хешується) і в
    резолв логіна, password — у Supabase Auth. Повідомлення про помилку — те саме
@@ -18,11 +20,20 @@ const sLogin = z.object({
 // POST /api/auth/login — вхід за логіном АБО email + паролем.
 // Резолв логін→email виконується ЛИШЕ на сервері (service-role); email клієнту
 // не повертається — це закриває енумерацію акаунтів. Сесія — через cookie.
+// 0206 (с84): відповідь несе `kind` — "platform" для оператора платформи (акаунт
+// без профілю; клієнт веде в /platform) або "clinic". Персонал центру зі статусом
+// suspended / archived (`platform_accounts`) НЕ входить: сесію, яку щойно відкрив
+// GoTrue, тут же гасимо і віддаємо 403 з поясненням. Глобальні акаунти
+// (направник / керівник, clinic_id NULL) і вже відкриті сесії не чіпаються —
+// названо в ToDo (Н-25).
 export async function POST(req: Request) {
   const FAIL = "Невірний логін/email або пароль.";
   const parsed = await parseBody("api/auth/login", req, sLogin, FAIL);
   if (!parsed.ok) return parsed.res;
   const { identifier: ident, password } = parsed.data;
+  if (!isAdminConfigured()) {
+    return NextResponse.json({ error: "Сервер не налаштовано (SUPABASE_SERVICE_ROLE_KEY)" }, { status: 500 });
+  }
 
   // Rate-limit: за IP і окремо за ідентифікатором (захист від перебору паролів).
   const ip = clientIp(req);
@@ -47,9 +58,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: FAIL }, { status: 400 });
     }
   } else {
-    if (!isAdminConfigured()) {
-      return NextResponse.json({ error: "Сервер не налаштовано (SUPABASE_SERVICE_ROLE_KEY)" }, { status: 500 });
-    }
     /* Резолв логін→email через RPC (0072). Раніше було `.ilike("login", ident)`:
        семантично це регістронезалежна рівність, але планувальник не може взяти
        btree по lower(login) — предикат не sargable, тож КОЖНА спроба входу (і кожна
@@ -63,12 +71,47 @@ export async function POST(req: Request) {
   }
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data: signed, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
     if (/email not confirmed/i.test(error.message)) {
       return NextResponse.json({ error: "Спочатку підтвердьте email — перевірте пошту." }, { status: 400 });
     }
     return NextResponse.json({ error: FAIL }, { status: 400 });
   }
-  return NextResponse.json({ ok: true });
+
+  /* 0206: хто увійшов — оператор платформи чи персонал центру, і чи центр не
+     призупинений. Читання під service_role за id ПЕРЕВІРЕНОЇ сесії (ніколи з
+     тіла). Помилка читання НЕ зриває вхід (доступність входу важливіша — той
+     самий вибір, що в лімітера), але ніколи не мовчить (`logError`). */
+  const uid = signed.user?.id ?? null;
+  if (uid) {
+    const admin = createAdminClient();
+    const { data: op, error: opErr } = await admin
+      .from("platform_operators").select("id, active").eq("id", uid).maybeSingle();
+    if (opErr) logError({ event: "login.kind_read_failed", actorId: uid, errorCode: opErr.code ?? null, message: opErr.message });
+    if (op) {
+      if (!op.active) {
+        await supabase.auth.signOut();
+        return NextResponse.json({ error: "Доступ оператора вимкнено. Зверніться до іншого оператора RadFlow." }, { status: 403 });
+      }
+      return NextResponse.json({ ok: true, kind: "platform" });
+    }
+    const { data: prof, error: pErr } = await admin
+      .from("profiles").select("clinic_id").eq("id", uid).maybeSingle();
+    if (pErr) logError({ event: "login.kind_read_failed", actorId: uid, errorCode: pErr.code ?? null, message: pErr.message });
+    if (prof?.clinic_id) {
+      const { data: acc, error: aErr } = await admin
+        .from("platform_accounts").select("status").eq("clinic_id", prof.clinic_id).maybeSingle();
+      if (aErr) logError({ event: "login.status_read_failed", actorId: uid, clinicId: prof.clinic_id, errorCode: aErr.code ?? null, message: aErr.message });
+      if (acc && isClinicStatus(acc.status) && LOGIN_BLOCKED_STATUSES.includes(acc.status)) {
+        await supabase.auth.signOut();
+        logError({ event: "login.clinic_blocked", actorId: uid, clinicId: prof.clinic_id, errorCode: acc.status });
+        return NextResponse.json(
+          { error: "Доступ вашого центру до RadFlow призупинено. Зверніться до RadFlow." },
+          { status: 403 }
+        );
+      }
+    }
+  }
+  return NextResponse.json({ ok: true, kind: "clinic" });
 }

@@ -207,6 +207,21 @@ const OPEN_BY_DESIGN: string[] = [];
    `/search` гейт — це термінальний `else` чотиригілкового розбору ролі. */
 const GATE_APART = ["/ceo", "/search"];
 
+/* ===== 5б. КОНТУР ПЛАТФОРМИ (0206, с84) — гейт ІНШОЇ форми, названий окремо =====
+   Оператор платформи — акаунт БЕЗ профілю і без `user_role`, тож голова
+   «getUser → profiles → redirect» до нього не застосовна за побудовою: право дає
+   рядок `platform_operators`, який читає лише service-role на сервері
+   (`platformSession()` у lib/platformAuth.ts). Цей перелік — третя категорія
+   поруч із PUBLIC і GATES, і він так само мусить збігатись із деревом в обидва
+   боки. Пін тримає ВЕСЬ ланцюг до наслідку: без сесії → /login з поверненням;
+   сесія без рядка оператора → /queue; вимкнений оператор → рендер відмови з
+   кнопкою виходу (редірект дав би петлю з middleware, який веде оператора за
+   прапорцем `app_metadata` саме сюди). */
+const HEAD_PLATFORM = /const \{ user, operator \} = await platformSession\(\); if \(!user\) redirect\("\/login\?redirect=\/platform"\); if \(!operator\) redirect\("\/queue"\); if \(!operator\.active\) \{ return <RoleNotice title="Доступ оператора вимкнено"/;
+const PLATFORM_GATES: Record<string, { why: string }> = {
+  "/platform": { why: "консоль оператора платформи: право — рядок platform_operators, не роль профілю; гейт — platformSession()" },
+};
+
 describe("поверхня авторизації — перелік проти дерева", () => {
   it("форма дерева — без груп і паралельних слотів", () => {
     expect(ROUTES.filter((r) => /[()@]/.test(r)),
@@ -214,13 +229,13 @@ describe("поверхня авторизації — перелік проти 
   });
 
   it("кожен роут свідомо віднесений: або публічний, або з гейтом", () => {
-    const unclassified = ROUTES.filter((r) => !(r in PUBLIC) && !(r in GATES));
+    const unclassified = ROUTES.filter((r) => !(r in PUBLIC) && !(r in GATES) && !(r in PLATFORM_GATES));
     expect(unclassified,
       "нова сторінка зʼявилась у дереві і не віднесена ні до публічних, ні до захищених — саме так екран і потрапляє в прод без гейта").toEqual([]);
   });
 
   it("інвентар не описує того, чого в дереві немає", () => {
-    const ghosts = [...Object.keys(PUBLIC), ...Object.keys(GATES)].filter((r) => !ROUTES.includes(r));
+    const ghosts = [...Object.keys(PUBLIC), ...Object.keys(GATES), ...Object.keys(PLATFORM_GATES)].filter((r) => !ROUTES.includes(r));
     expect(ghosts, "інвентар описує неіснуючий роут — сторож охороняє порожнечу").toEqual([]);
   });
 
@@ -232,7 +247,7 @@ describe("поверхня авторизації — перелік проти 
        нікому не було видно. */
     const dead = PROTECTED.filter((p) => !ROUTES.some((r) => r === p || r.startsWith(p + "/")));
     expect(dead, "PROTECTED називає шлях, якого в дереві немає").toEqual([]);
-    const unguarded = Object.keys(GATES).filter((r) => !covered(r));
+    const unguarded = [...Object.keys(GATES), ...Object.keys(PLATFORM_GATES)].filter((r) => !covered(r));
     /* ⚠️ Формулювання виправлене за ревʼю: анонімного відведе і сама сторінка
        (`if (!user) redirect("/login")` — це HEAD, він стережеться нижче). Що
        справді втрачається — ешелон: повернення `?redirect=` після входу і те,
@@ -257,8 +272,20 @@ describe("поверхня авторизації — перелік проти 
     const s = src(MW);
     expect(s, "PROTECTED більше не питається — незалогіненого перестало відводити на вхід")
       .toMatch(/if \(!user && matches\(path, PROTECTED\)\) \{ const url = request\.nextUrl\.clone\(\); url\.pathname = "\/login"; url\.searchParams\.set\("redirect", path\); return NextResponse\.redirect\(url\); \}/);
+    /* 0206: дім залогіненого — за прапорцем оператора (маршрутизація, не права):
+       оператор → /platform, решта → /queue. Пін тримає і обчислення `home`, і те,
+       що AUTH_PAGES веде саме в нього. */
+    expect(s, "дім залогіненого більше не обчислюється з прапорця оператора")
+      .toMatch(/const operator = isOperatorByClaim\(user\); const home = operator \? PLATFORM_HOME : "\/queue";/);
     expect(s, "AUTH_PAGES більше не питається — залогіненого перестало відводити зі входу")
-      .toMatch(/if \(user && matches\(path, AUTH_PAGES\)\) \{ const url = request\.nextUrl\.clone\(\); url\.pathname = "\/queue"; return NextResponse\.redirect\(url\); \}/);
+      .toMatch(/if \(user && matches\(path, AUTH_PAGES\)\) \{ const url = request\.nextUrl\.clone\(\); url\.pathname = home; return NextResponse\.redirect\(url\); \}/);
+    expect(s, "оператора на клінічній сторінці перестало вести в консоль (там без профілю його чекає /api/auth/reset)")
+      .toMatch(/if \(user && operator && matches\(path, PROTECTED\) && !matches\(path, PLATFORM\)\) \{ const url = request\.nextUrl\.clone\(\); url\.pathname = PLATFORM_HOME; return NextResponse\.redirect\(url\); \}/);
+    expect(s, "персонал центру на /platform перестало відводити в /queue")
+      .toMatch(/if \(user && !operator && matches\(path, PLATFORM\)\) \{ const url = request\.nextUrl\.clone\(\); url\.pathname = "\/queue"; return NextResponse\.redirect\(url\); \}/);
+    expect(listOf("PLATFORM").slice().sort(), "перелік платформних шляхів у middleware змінився").toEqual(["/platform"]);
+    expect(src("lib/platformClaim.ts"), "PLATFORM_HOME більше не /platform — маршрутизація і PROTECTED розійдуться")
+      .toMatch(/export const PLATFORM_HOME = "\/platform";/);
     expect(s, "префіксне зіставлення зрізане — /queue/щось перестав бути захищеним")
       .toMatch(/return list\.some\(\(p\) => path === p \|\| path\.startsWith\(p \+ "\/"\)\);/);
     expect(listOf("MACHINE_PREFIXES", ROOT_MW).slice().sort(),
@@ -550,5 +577,29 @@ describe("RF-4 — роль не підставляється замість в�
     }
     expect(optional, `${prop} знову необовʼязковий — ${why}`).toEqual([]);
     expect(defaulted, `у ${prop} зʼявилось типове значення — ${why}`).toEqual([]);
+  });
+});
+
+describe("поверхня авторизації — контур платформи (0206)", () => {
+  it.each(Object.keys(PLATFORM_GATES))("%s — гейт оператора на місці і той самий", (route) => {
+    const s = src(`app${route}/page.tsx`);
+    expect(s, `${route}: ланцюг «сесія → рядок оператора → active → наслідок» розірвано або змінено`).toMatch(HEAD_PLATFORM);
+    /* Голова клінічних сторінок тут не потрібна і НЕ має зʼявитись: профілю в
+       оператора немає, і `.from("profiles")` на цій сторінці означав би, що хтось
+       почав міркувати ролями центру там, де їх немає. */
+    expect(s, `${route}: сторінка платформи читає profiles — це не її контур`).not.toMatch(/\.from\("profiles"\)/);
+    expect(s, `${route}: service-role не імпортують у сторінку — лише через lib/platformAuth`).not.toMatch(/from "@\/lib\/supabase\/admin"/);
+  });
+
+  it("platformSession — рядок оператора читається лише за id ПЕРЕВІРЕНОЇ сесії", () => {
+    const s = src("lib/platformAuth.ts");
+    const user = s.indexOf("auth.getUser()");
+    const read = s.indexOf('.from("platform_operators")');
+    expect(user, "у lib/platformAuth.ts зник виклик getUser()").toBeGreaterThan(-1);
+    expect(read, "у lib/platformAuth.ts зникло читання platform_operators").toBeGreaterThan(-1);
+    expect(s, "рядок оператора шукається не за user.id сесії")
+      .toMatch(/platformOperatorOf\(createAdminClient\(\), user\.id\)/);
+    expect(s, "requirePlatformOperator не читає рядок за id сесії")
+      .toMatch(/const operator = await platformOperatorOf\(admin, user\.id\);/);
   });
 });

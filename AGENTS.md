@@ -560,6 +560,62 @@
   `profiles_ceo_linked_read` несут роль-гард (`role='referrer'` / `role='ceo'`) как осознанную
   границу изоляции — не удаляй.
 
+## Контур платформы (с84 / 0206)
+
+- **Оператор платформы — человек RadFlow, который управляет ЦЕНТРАМИ как клиентами,
+  а не пациентами как записями.** Это аккаунт `auth.users` **без строки `profiles`**:
+  он не входит в `user_role` (енум не расширять!), центра не имеет, для RLS он никто
+  (`auth_role()`/`auth_clinic_id()` NULL → ноль строк, DEFINER-функции для
+  `authenticated` отказывают). **Право даёт строка `platform_operators`** (deny-all RLS,
+  читает только service_role) — гейт `requirePlatformOperator` (`lib/platformAuth.ts`):
+  сессия → строка по `user.id` ПРОВЕРЕННОЙ сессии → `active` → лимит; единственный
+  выход «ok» в конце (пин — `tests/serverAuthSurface.test.ts`, четвёртый гейт).
+  Страница `/platform` берёт сессию через `platformSession()` оттуда же и НЕ импортирует
+  admin-клиент сама; её гейт другой формы, чем у клинических страниц — категория
+  `PLATFORM_GATES` в `tests/authSurface.test.ts`.
+- **`app_metadata.platform = 'operator'` — только маршрутизация, никогда авторизация**
+  (`lib/platformClaim.ts`, без импортов — edge-рантайм middleware). Middleware ведёт
+  оператора с `/`, `/login` и любой клинической страницы в `/platform`, персонал центра
+  с `/platform` — в `/queue`. Ставит/снимает флаг только сервер (`auth.admin`) при
+  создании/включении/выключении оператора. Разошлись флаг и строка — сторона со
+  строкой побеждает: роуты и страница отказывают.
+- **Таблицы 0206 (все три — RLS без политик, `revoke all … from public, anon,
+  authenticated`, №22 ключей не дают):** `platform_operators` (email, full_name, active,
+  created_by, disabled_at, note); `platform_accounts` — учёт центра как клиента: `status`
+  trial / active / suspended / archived (CHECK; **строки может не быть = trial**),
+  `status_reason/_changed_at/_by`, `plan`, `paid_until`, `notes` — **ручной контур без
+  платёжного провайдера** (решение владельца: счета позже); `platform_log` — журнал
+  действий оператора (`action` формы `a.b`, `details` без ПДн — CHECK на ключи; запись
+  fail-OPEN через `platformLog` с `logError`, как важные события). Агрегаты —
+  `platform_clinic_stats()` (INVOKER, EXECUTE только service_role, без ПДн).
+- **Статус центра НЕ зависит от оплаты и применяется в коде РОВНО в одном месте:**
+  `/api/auth/login` не впускает персонал центра со статусом suspended/archived (сессию,
+  которую открыл GoTrue, тут же гасит, 403). Живые сессии, server actions и глобальные
+  аккаунты (направники/CEO) статусом не ограничены — это Н-25, решение владельца.
+  Расширять действие статуса — отдельный пакет, а не «ещё один if» по месту.
+- **Ни один роут `/api/platform/**` не читает `queue_entries` / `waitlist_entries` /
+  `patient_cases` / `doctors` / `referrer_private`** — оператор видит центры, штат
+  (рабочие контакты — только у админов, служебные адреса скрыты), кабинеты, интеграции
+  без секретов, журнал. `tests/platformRoutes.test.ts` проверяет это по журналу запросов
+  двойника; новый роут — та же проверка.
+- **Операторы:** создаёт оператор (`POST /api/platform/operators`; временный пароль
+  показывается РОВНО один раз в ответе, в журнал не попадает), первый — `POST
+  /api/platform/bootstrap` под `CRON_SECRET`, только пока таблица пуста (потом 409).
+  Себя выключить нельзя, выключение = `active=false` + снятие флага (удаления нет: след в
+  журнале и в `status_changed_by` должен жить). Пароль выключенному не сбрасывают.
+- **Сторож:** №23 получил шесть ключей `t:`/`k:` для трёх таблиц (дайджесты замерены на
+  проде в откаченной транзакции генератором `scripts/build-0206-reprint.mjs`), №24
+  исключает аккаунты со строкой `platform_operators` (включая выключенных). **`clinics`
+  DDL не трогали сознательно**: `tests/tzKyivPhase2.test.ts` пинит `k:clinics`, и статус
+  живёт в side-таблице — заодно админ центра не может выставить себе статус через
+  `clinics_update`. Новая платформенная таблица = строки №23 в той же миграции.
+- **Новое действие журнала** = `PLATFORM_ACTIONS` + подпись в `PLATFORM_ACTION_LABEL`
+  (`lib/platformContract.ts`) + роут, который его пишет (пин в
+  `tests/platformOperators0206.test.ts`: действие без роута — мёртвая метка).
+- Двойник PostgREST (`tests/fixtures/fakeSupabase.ts`) с с84 умеет `select(cols, { count:
+  "exact", head: true })` по-настоящему; `upsert`/`delete` по-прежнему бросают — роуты
+  контура пишут «select → update/insert».
+
 ## Создание аккаунтов и пароли
 
 - Админ создаёт аккаунты радиолога/направителя/CEO (пароль при создании не задаётся).

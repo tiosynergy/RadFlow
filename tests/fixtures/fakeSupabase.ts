@@ -92,11 +92,26 @@ class FakeQuery {
      = кидає, за каноном двійника. */
   private patch: Row | null = null;
   private inserted: Row[] | null = null;
+  /* с84 (0206): `select(cols, { count: "exact", head: true })` — ПО-СПРАВЖНЬОМУ.
+     До с84 опції мовчки губились: `count` у відповіді був undefined, і роут, що
+     вирішує за числом рядків (bootstrap: «операторів ще немає?»), читав би
+     `undefined ?? 0` як «порожньо» — тобто мʼякий двійник робив зеленим той тест,
+     де прод відмовляє. Інший `count` або невідома опція — кидає, за каноном. */
+  private countMode: "exact" | null = null;
+  private headOnly = false;
 
   constructor(private table: string, private db: FakeDb) {}
 
-  select(cols?: string) {
+  select(cols?: string, opts?: { count?: string; head?: boolean }) {
     this.cols = (cols ?? "").split(",").map((c) => c.trim()).filter(Boolean);
+    if (opts) {
+      const keys = Object.keys(opts).filter((k) => k !== "count" && k !== "head");
+      if (keys.length) throw new Error(`FakeSupabase: select() з опціями ${keys.join(", ")} не реалізовано — додай у двійник`);
+      if (opts.count !== undefined && opts.count !== "exact") throw new Error(`FakeSupabase: select() count=${opts.count} не реалізовано — додай у двійник`);
+      this.countMode = opts.count === "exact" ? "exact" : null;
+      this.headOnly = opts.head === true;
+      if (this.headOnly && !this.countMode) throw new Error("FakeSupabase: select() head:true без count — відповідь була б порожньою без числа; додай count");
+    }
     return this;
   }
   insert(rows: Row | Row[]) { this.inserted = Array.isArray(rows) ? rows : [rows]; return this; }
@@ -141,7 +156,7 @@ class FakeQuery {
   maybeSingle() { this.wantSingle = true; return this; }
   single() { this.wantSingle = true; return this; }
 
-  then<T>(res: (v: { data: unknown; error: unknown }) => T, rej?: (e: unknown) => T) {
+  then<T>(res: (v: { data: unknown; count?: number; error: unknown }) => T, rej?: (e: unknown) => T) {
     try {
       return Promise.resolve(this.run()).then(res, rej);
     } catch (e) {
@@ -153,7 +168,7 @@ class FakeQuery {
     }
   }
 
-  private run(): { data: unknown; error: unknown } {
+  private run(): { data: unknown; count?: number; error: unknown } {
     const err = this.db.errors[this.table];
     if (err) return { data: null, error: err };
     const late = this.db.errorsAfter?.[this.table];
@@ -186,6 +201,10 @@ class FakeQuery {
     }
 
     let out = rows.filter((r) => this.matches(r));
+    /* count: exact рахує ВІДФІЛЬТРОВАНІ рядки до OFFSET/LIMIT (як PostgREST
+       Content-Range); head: true не віддає рядків узагалі. */
+    const exact = this.countMode === "exact" ? out.length : undefined;
+    if (this.headOnly) return { data: null, count: exact, error: null };
     if (this.off !== null && !this.orders.length) {
       throw new Error(`FakeSupabase: ${this.table}.range() без order() — offset у Postgres недетермінований`);
     }
@@ -201,7 +220,9 @@ class FakeQuery {
       // Колонка, якої в рядку фікстури немає, — це NULL (як віддав би PostgREST), а не undefined.
       out = out.map((r) => Object.fromEntries(this.cols.map((c) => [c, r[c] === undefined ? null : r[c]])));
     }
-    return this.wantSingle ? { data: out[0] ?? null, error: null } : { data: out, error: null };
+    return this.wantSingle
+      ? { data: out[0] ?? null, count: exact, error: null }
+      : { data: out, count: exact, error: null };
   }
 
   /* PostgREST на неіснуючу колонку віддає помилку (42703/PGRST204), і роут

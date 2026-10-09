@@ -106,7 +106,9 @@ export default function LoginPage() {
         showToast(data.error || "Невірний логін/email або пароль.");
         return;
       }
-      router.push(redirectTo);
+      /* 0206: оператор платформи — у консоль, незалежно від ?redirect= (він веде
+         в клінічний контур, де в оператора профілю немає). */
+      router.push(data.kind === "platform" ? "/platform" : redirectTo);
       router.refresh();
     } catch {
       setSubmitting(false);

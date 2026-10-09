@@ -1438,11 +1438,137 @@ export type Database = {
         };
         Relationships: [];
       };
+      /* 0206 (с84): контур платформи — оператор RadFlow керує центрами як клієнтами.
+         Усі три таблиці — deny-all RLS без політик і без грантів клієнтським
+         ролям: читає/пише ЛИШЕ серверний шар під service_role після гейта
+         `requirePlatformOperator` (lib/platformAuth.ts). */
+      platform_operators: {
+        Row: {
+          id: string;
+          email: string;
+          full_name: string;
+          active: boolean;
+          created_at: string;
+          created_by: string | null;
+          disabled_at: string | null;
+          note: string | null;
+        };
+        Insert: {
+          id: string;
+          email: string;
+          full_name?: string;
+          active?: boolean;
+          created_at?: string;
+          created_by?: string | null;
+          disabled_at?: string | null;
+          note?: string | null;
+        };
+        Update: {
+          email?: string;
+          full_name?: string;
+          active?: boolean;
+          created_by?: string | null;
+          disabled_at?: string | null;
+          note?: string | null;
+        };
+        Relationships: [];
+      };
+      // Обліковий запис центру як клієнта; рядка може не бути (= trial).
+      platform_accounts: {
+        Row: {
+          clinic_id: string;
+          status: "trial" | "active" | "suspended" | "archived";
+          status_reason: string | null;
+          status_changed_at: string | null;
+          status_changed_by: string | null;
+          plan: string | null;
+          paid_until: string | null;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+          updated_by: string | null;
+        };
+        Insert: {
+          clinic_id: string;
+          status?: "trial" | "active" | "suspended" | "archived";
+          status_reason?: string | null;
+          status_changed_at?: string | null;
+          status_changed_by?: string | null;
+          plan?: string | null;
+          paid_until?: string | null;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Update: {
+          status?: "trial" | "active" | "suspended" | "archived";
+          status_reason?: string | null;
+          status_changed_at?: string | null;
+          status_changed_by?: string | null;
+          plan?: string | null;
+          paid_until?: string | null;
+          notes?: string | null;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Relationships: [];
+      };
+      // Журнал дій оператора: без ПДн (CHECK на ключі details), append-only за змістом.
+      platform_log: {
+        Row: {
+          id: string;
+          occurred_at: string;
+          operator_id: string | null;
+          action: string;
+          clinic_id: string | null;
+          clinic_name: string | null;
+          target_operator_id: string | null;
+          details: Json;
+        };
+        Insert: {
+          id?: string;
+          occurred_at?: string;
+          operator_id?: string | null;
+          action: string;
+          clinic_id?: string | null;
+          clinic_name?: string | null;
+          target_operator_id?: string | null;
+          details?: Json;
+        };
+        Update: {
+          clinic_id?: string | null;
+          clinic_name?: string | null;
+          details?: Json;
+        };
+        Relationships: [];
+      };
     };
     Views: {
       [_ in never]: never;
     };
     Functions: {
+      /* 0206: агрегати по центрах для консолі платформи — INVOKER, EXECUTE лише
+         service_role; по рядку на кожен центр, ПДн не віддає. */
+      platform_clinic_stats: {
+        Args: Record<string, never>;
+        Returns: {
+          clinic_id: string;
+          staff_n: number;
+          admins_n: number;
+          referrers_n: number;
+          ceos_n: number;
+          rooms_n: number;
+          rooms_active_n: number;
+          services_n: number;
+          entries_total: number;
+          entries_30d: number;
+          last_activity_at: string | null;
+          integration_keys_n: number;
+          webhooks_n: number;
+          gcal_status: string | null;
+        }[];
+      };
       /* 0176 (U-66) — правка картки пацієнта ТРЬОМА statement-ами в одній
          транзакції: ЗВУЖЕННЯ (`referrer_id → null`) → ДАНІ → РОЗШИРЕННЯ.
          Порядок не косметичний: realtime на UPDATE віддає підписнику ПОВНИЙ
