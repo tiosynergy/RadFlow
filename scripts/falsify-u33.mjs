@@ -50,11 +50,18 @@ const M = [
    "{modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed}"],
   ["N07 екран «зараз» перевели на серверний фід", QB, READNOW,
    /* с57, U-65: у виклику зʼявився `clinicId` (сітка зайнятості підписується
-     по клініці) — якір протух і стенд чесно відхилив позицію. */
-  "<RoomDayOverviewModal rooms={visRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed}",
-   "<RoomDayOverviewModal rooms={visRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed}"],
+     по клініці) — якір протух і стенд чесно відхилив позицію.
+     ⚠️ ПЕРЕЯКОРЕНО в с85 (Н-24(б)), і цього разу змінився не текст, а РОЛЬ:
+     з с81 карта дня переносить записи і законно стоїть на writeIncidentsFeed
+     (тест перелічує її у WRITE_FORMS), а в READ_NOW лишився один BreakdownModal.
+     Стара мутація била по карті дня і з с81 давала «ЯКІР НЕ ЗНАЙДЕНО»: родина
+     «екран про ЗАРАЗ дістав фід сервера» не доводилась нічим. Зворотний бік
+     перекласифікації (карту дня повернули на фід «зараз») — N23. */
+  "<BreakdownModal rooms={rooms} incidents={incidentsFeed}",
+   "<BreakdownModal rooms={rooms} incidents={writeIncidentsFeed}"],
+  /* с85: `visRooms` → `overviewRooms` у виклику карти дня (с81) — якір протух. */
   ["N08 НОВИЙ споживач простоїв заїхав некласифікованим", QB, CLASSED,
-   "<RoomDayOverviewModal rooms={visRooms}", "<SlotsOverviewPane rooms={visRooms}"],
+   "<RoomDayOverviewModal rooms={overviewRooms}", "<SlotsOverviewPane rooms={overviewRooms}"],
   ["N09 BookingModal повернувся на предикат моменту", BM, NOSTART,
    "return studyBlockedByFeed(incidents, roomId, base, slotDur);",
    "return slotBlockedByFeed(incidents, roomId, base);"],
@@ -98,6 +105,10 @@ const M = [
   ["N22 blockedLabel порталу завжди друкує літерал (привʼязка ціла)", RP, TOOLTIP,
    "    if (cap > 0 && Number.isFinite(cap)) {",
    "    if (false && cap > 0 && Number.isFinite(cap)) {"],
+  /* ── с85 (Н-24(б)): перекласифікація с81 мусить триматись сторожем ───────── */
+  ["N23 карту дня (переносить записи) повернули на фід «зараз»", QB, WRITEFD,
+   "<RoomDayOverviewModal rooms={overviewRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed}",
+   "<RoomDayOverviewModal rooms={overviewRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed}"],
 ];
 
 const files = [...new Set(M.map((m) => m[1]))];
